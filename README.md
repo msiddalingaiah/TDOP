@@ -13,7 +13,7 @@ An Eclipse project is available.
 
 If you have [GraphViz](http://www.graphviz.org) installed, you can generate a view an Abstract Syntax Tree with this command:
 
-java -cp bin com.madhu.tdop.SQLParser  | dot -Tpng > x.png
+<code>java -cp bin com.madhu.tdop.SQLParser  | dot -Tpng > x.png</code>
 
 The output is a .png image.
 
