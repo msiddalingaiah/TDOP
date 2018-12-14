@@ -15,6 +15,8 @@ If you have [GraphViz](http://www.graphviz.org) installed, you can generate a vi
 
 <code>java -cp bin com.madhu.tdop.SQLParser  | dot -Tpng > x.png</code>
 
-The output is a .png image.
+The output is a .png image like this:
+
+![AST](x.png "Abstract Syntax Tree")
 
 Madhu Siddalingaiah
