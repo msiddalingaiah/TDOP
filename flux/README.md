@@ -5,7 +5,7 @@ compiles them through a classic pipeline, and executes the result as native
 x86-64 machine code — all in memory, with no external tools required.
 
 ```
-(+ (* x 3) (- y 1))  →  mov rax, rcx / imul rax, 3 / ...  →  42
+(if (< x 0) (* x -1) x)  →  SSA → regalloc → x86-64 bytes → 42
 ```
 
 ---
@@ -19,31 +19,40 @@ compilation pipeline from scratch:
 S-expression
     │
     ▼
-  Parser          flux/core/parser.py
+  Parser            flux/core/parser.py
     │
     ▼
-  Tree IR         flux/core/tree.py          (Expr, Const, Arg, Add, Sub, Mul)
+  Tree IR           flux/core/tree.py        (Expr, Const, Arg, Add, Sub, Mul,
+    │                                         Lt, Gt, Eq, If)
+    ▼
+  BURG selector     flux/core/burg.py        bottom-up rewrite, optimal tiling
     │
     ▼
-  BURG selector   flux/core/burg.py          bottom-up rewrite, optimal tiling
+  Linear IR         flux/core/ir.py          (VReg, Opcode, Instr, BasicBlock,
+    │                                         Function)
+    ▼
+  SSA construction  flux/core/ssa.py         CFG splitting, dominators,
+    │               flux/core/cfg.py         phi insertion, renaming
+    ▼
+  [optimisations]                            (DCE, const prop, GVN — coming)
     │
     ▼
-  Linear IR       flux/core/ir.py            (VReg, Opcode, Instr, BasicBlock, Function)
+  SSA destruction   flux/core/ssa.py         phi → parallel copies → flat IR
     │
     ▼
-  Linear scan     flux/core/linear_scan.py   Poletto & Sarkar (1999)
+  Linear scan       flux/core/linear_scan.py Poletto & Sarkar (1999)
+    │                                        with stack spilling
+    ▼
+  x86-64 emitter    flux/targets/x86_64/     encodes instructions as raw bytes
     │
     ▼
-  x86-64 emitter  flux/targets/x86_64/       encodes instructions as raw bytes
-    │
-    ▼
-  execute         flux/core/jit.py           VirtualAlloc / mmap + ctypes
+  execute           flux/core/jit.py         VirtualAlloc / mmap + ctypes
 ```
 
 The architecture is target-neutral above the emitter layer. A `Target`
-descriptor carries the register file and calling convention; the
-`Allocator` base class handles instruction lowering so that adding a new
-target only requires a new `Emitter` subclass.
+descriptor carries the register file, calling convention, and scratch
+registers. The `Allocator` base class handles instruction lowering so
+adding a new target only requires a new `Emitter` subclass.
 
 ---
 
@@ -83,18 +92,27 @@ flux> (def y 7)
 y = 7
 flux> (* x y)
 42
-flux> (def result (* _ 2))
-result = 84
+flux> (if (< x y) x y)
+6
+flux> (def abs (if (< _ 0) (* _ -1) _))
+abs = 6
 flux> :ir
 function f(%0):
   block entry:
-    %1 = mul %0, #2
-    ret %1
+    cmp %0, #0
+    jge L2
+    %1 = mul %0, #-1
+    %2 = move %1
+    jmp L3
+    label L2
+    %2 = move %0
+    label L3
+    ret %2
 flux> :vars
   x = 6
   y = 7
-  result = 84
-  _ = 84
+  abs = 6
+  _ = 6
 flux> quit
 Bye.
 ```
@@ -106,6 +124,10 @@ Bye.
 | `(+ a b)` | addition |
 | `(- a b)` | subtraction |
 | `(* a b)` | multiplication |
+| `(< a b)` | less-than comparison |
+| `(> a b)` | greater-than comparison |
+| `(= a b)` | equality comparison |
+| `(if cond then else)` | conditional expression |
 
 Operands can be integer literals, bound variable names, or nested expressions.
 `_` always holds the result of the last evaluation.
@@ -129,7 +151,7 @@ Operands can be integer literals, bound variable names, or nested expressions.
 from flux.core.compiler import compile_and_run, compile_expr
 
 # Parse, compile, and execute in one call
-result = compile_and_run("(+ (* x 3) (- y 1))", x=10, y=13)
+result = compile_and_run("(if (< x 0) (* x -1) x)", x=-42)
 # → 42
 
 # Compile only — returns (Function, bytes)
@@ -139,6 +161,12 @@ print(repr(fn))
 #   block entry:
 #     %1 = mul %0, #7
 #     ret %1
+
+# SSA round-trip (construction + destruction)
+from flux.core.ssa import to_ssa, from_ssa
+ssa = to_ssa(fn)
+print(repr(ssa))   # SSAFunction with phi nodes
+out = from_ssa(ssa)  # back to flat IR, ready for allocation
 ```
 
 ---
@@ -149,35 +177,42 @@ print(repr(fn))
 flux/
 ├── flux/
 │   ├── __main__.py              entry point  (python -m flux)
-│   └── core/
-│       ├── tree.py              tree IR  (Expr, Const, Arg, Add, Sub, Mul)
-│       ├── ir.py                linear IR  (VReg, Opcode, Instr, BasicBlock, Function)
-│       ├── builder.py           FunctionBuilder — fluent IR construction
-│       ├── burg.py              BURG instruction selector
-│       ├── allocator.py         Allocator base class + shared lowering
-│       ├── trivial_allocator.py TrivialAllocator — first-seen order
-│       ├── linear_scan.py       LinearScanAllocator + LiveInterval
-│       ├── emitter.py           abstract Emitter base class
-│       ├── target.py            Target descriptor (registers, calling convention)
-│       ├── operands.py          Operand, Reg, Imm, Mem
-│       ├── parser.py            S-expression → Expr tree
-│       ├── compiler.py          compile_expr / compile_and_run
-│       ├── repl.py              FluxRepl
-│       └── jit.py               make_callable / free_code (VirtualAlloc / mmap)
+│   ├── core/
+│   │   ├── tree.py              tree IR  (Expr, Const, Arg, Add, Sub, Mul,
+│   │   │                                  Lt, Gt, Eq, If)
+│   │   ├── ir.py                linear IR  (VReg, LabelRef, Opcode, Instr,
+│   │   │                                   BasicBlock, Function)
+│   │   ├── builder.py           FunctionBuilder — fluent IR construction
+│   │   ├── burg.py              BURG instruction selector (rules 1–10)
+│   │   ├── cfg.py               CFG construction, RPO, dominators, frontiers
+│   │   ├── ssa.py               SSA construction (to_ssa) and destruction (from_ssa)
+│   │   ├── allocator.py         Allocator base class + shared instruction lowering
+│   │   ├── trivial_allocator.py TrivialAllocator — first-seen order, no spilling
+│   │   ├── linear_scan.py       LinearScanAllocator — live intervals + stack spilling
+│   │   ├── emitter.py           abstract Emitter base class + label fixup helpers
+│   │   ├── target.py            Target descriptor (registers, ABI, scratch regs)
+│   │   ├── operands.py          Operand, Reg, Imm, Mem, SpillSlot
+│   │   ├── parser.py            S-expression → Expr tree
+│   │   ├── compiler.py          compile_expr / compile_and_run
+│   │   ├── repl.py              FluxRepl
+│   │   └── jit.py               make_callable / free_code (VirtualAlloc / mmap)
 │   └── targets/
 │       └── x86_64/
 │           ├── regs.py          X86_64Reg + all GP registers
 │           ├── targets.py       WINDOWS and LINUX Target instances
-│           └── emitter.py       X86_64Emitter — instruction encoding
+│           └── emitter.py       X86_64Emitter — full instruction encoding
 └── tests/
-    ├── jit.py                   re-exports flux.core.jit for tests
+    ├── jit.py                   platform-agnostic JIT helper (re-exports core.jit)
     ├── test_emitter.py          encoding + execution tests
     ├── test_ir.py               IR data structure tests
     ├── test_trivial_allocator.py
     ├── test_linear_scan.py      interval computation + register reuse
     ├── test_burg.py             labeling costs + rule selection
     ├── test_integration.py      full pipeline: Expr → execute
-    └── test_parser.py           parser + compile_and_run
+    ├── test_parser.py           parser + compile_and_run
+    ├── test_conditionals.py     comparisons and if-then-else
+    ├── test_spill.py            register pressure + stack spilling
+    └── test_ssa.py              CFG, dominators, phi insertion, round-trip
 ```
 
 ---
@@ -192,26 +227,50 @@ minimum cost to derive each non-terminal (`REG` or `IMM`). The optimal
 tiling is then read off top-down. This ensures, for example, that a
 constant on the right-hand side of `*` always tiles as a 3-operand
 `imul` rather than loading the constant into a register first.
+Comparisons and `if` expressions are handled as rule 10, emitting a
+`cmp`, an inverted conditional branch, and a pre-allocated merge VReg.
 
-### Linear scan register allocation
+### SSA construction and destruction
 
-The allocator follows Poletto & Sarkar (1999). Live intervals are
-computed with a single pass over the flat instruction sequence.
-Intervals are processed in start-point order; registers are reclaimed
-as soon as their holder's interval ends and immediately reused.
-Parameters are pinned to the target's argument registers and participate
-in expiry so their registers become available to later temporaries.
+`to_ssa()` transforms the flat IR into SSA form in five steps:
 
-Spilling is not yet implemented — a `RuntimeError` is raised if the
-register pool is exhausted.
+1. **CFG construction** — LABEL and branch instructions are used as block
+   boundaries; proper predecessor/successor edges are built.
+2. **Dominator computation** — Cooper, Harvey & Kennedy (2001) iterative
+   algorithm over the reverse post-order.
+3. **Dominance frontiers** — standard frontier algorithm; identifies join
+   points where phi nodes are needed.
+4. **Phi insertion** — one phi per multiply-defined variable per frontier
+   block, using an iterated work-list.
+5. **Variable renaming** — DFS over the dominator tree; each definition
+   gets a fresh VReg; renaming stacks are maintained and restored.
+
+A post-renaming pruning pass removes phi nodes whose result is never
+used (conservative phi insertion places phis at all frontiers regardless
+of liveness; pruning makes this safe).
+
+`from_ssa()` (SSA destruction) replaces each phi with parallel copy
+instructions inserted into predecessor blocks, sequentialises them to
+avoid the lost-copy problem, then flattens the blocks back into the
+single-block format the allocator expects.
+
+### Register allocation with spilling
+
+The linear scan allocator follows Poletto & Sarkar (1999). When the
+register pool is exhausted, the interval with the furthest end point is
+spilled to a `[RBP-relative]` stack slot. Two scratch registers (R14
+and R15 on both ABIs) are reserved for spill reload/store and excluded
+from the allocatable pool. Spilled parameters are stored to their slots
+immediately after the prologue. The stack frame is 16-byte aligned.
 
 ### x86-64 encoding
 
-The emitter handles REX prefixes, ModRM bytes, and the distinction
-between extended (R8–R15) and non-extended registers. Supported
-instructions: `mov`, `add`, `sub`, `imul` (2- and 3-operand), `push`,
-`pop`, `ret`. The 3-operand form of `imul` is used when the rhs is an
-immediate, avoiding a register load.
+The emitter handles REX prefixes, ModRM bytes, and extended registers
+(R8–R15). Supported instructions: `mov`, `add`, `sub`, `imul` (2- and
+3-operand), `push`, `pop`, `cmp`, `jge`, `jle`, `jne`, `jmp`, `ret`,
+and RBP-relative `load_spill` / `store_spill`. Branch targets use a
+fixup system: a 4-byte placeholder is emitted, patched with the correct
+relative offset when the target label is placed.
 
 ### Calling conventions
 
@@ -226,21 +285,23 @@ automatically from `sys.platform` at runtime.
 
 | Component | Status |
 |---|---|
-| x86-64 emitter | ✅ mov, add, sub, imul, push, pop, ret |
-| Tree IR | ✅ Const, Arg, Add, Sub, Mul |
-| BURG selector | ✅ optimal tiling, imm/reg non-terminals |
-| Linear IR | ✅ single basic block |
+| x86-64 emitter | ✅ mov, add, sub, imul, push, pop, cmp, jge, jle, jne, jmp, ret, spill load/store |
+| Tree IR | ✅ Const, Arg, Add, Sub, Mul, Lt, Gt, Eq, If |
+| BURG selector | ✅ optimal tiling, imm/reg non-terminals, conditionals (rules 1–10) |
+| Linear IR | ✅ flat instruction list with labels, branches, and VRegs |
+| SSA construction | ✅ CFG splitting, RPO, dominators (Cooper 2001), phi insertion, renaming |
+| SSA destruction | ✅ phi → parallel copies, sequentialisation, flat IR reconstruction |
 | Trivial allocator | ✅ first-seen order, no spilling |
-| Linear scan allocator | ✅ live intervals, register reuse, no spilling |
-| S-expression parser | ✅ +, -, *, integer literals, named args |
+| Linear scan allocator | ✅ live intervals, register reuse, stack spilling |
+| Stack frame | ✅ prologue/epilogue, RBP-relative spill slots, 16-byte alignment |
+| S-expression parser | ✅ +, -, *, <, >, =, if, integer literals, named args |
 | REPL | ✅ def, :ir, :vars, :clear |
 | Windows support | ✅ VirtualAlloc, Microsoft x64 ABI |
 | Linux support | ✅ mmap, System V AMD64 ABI |
-| Spilling | ❌ not yet implemented |
-| Control flow / conditionals | ❌ not yet implemented |
-| SSA construction | ❌ not yet implemented |
-| Multiple basic blocks | ❌ not yet implemented |
-| ARM64 target | ❌ not yet implemented |
+| SSA optimisations | ❌ DCE, constant propagation, GVN — not yet |
+| Let bindings | ❌ not yet |
+| Function definitions | ❌ not yet |
+| ARM64 target | ❌ not yet |
 
 ---
 
@@ -251,9 +312,17 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-115 tests across 7 test modules, covering encoding, execution, interval
-computation, register reuse, BURG rule selection, and end-to-end
-pipeline correctness.
+179 tests across 11 test modules, covering encoding, execution, live
+interval computation, register reuse, spilling, BURG rule selection,
+SSA construction and destruction, and end-to-end pipeline correctness.
+
+---
+
+## Documentation
+
+- [BURG instruction selection](docs/burg.md) — rule table, cost model, interpretive vs table-driven, adding new operations
+- [SSA construction and destruction](docs/ssa.md) — CFG splitting, dominators, phi insertion, renaming, destruction
+- [Register allocation and spilling](docs/allocator.md) — live intervals, linear scan, spill slots, stack frame, calling conventions
 
 ---
 
