@@ -2,25 +2,16 @@ from __future__ import annotations
 from typing import List, Union
 
 from flux.core.operands import Imm
-from flux.core.ir import VReg, Opcode, Instr, BasicBlock, Function
+from flux.core.ir import VReg, LabelRef, Opcode, Instr, BasicBlock, Function
 
 
 class FunctionBuilder:
-    """Fluent builder for linear-IR functions.
-
-    Usage::
-
-        b = FunctionBuilder("add")
-        a, x = b.params(2)
-        result = b.add(a, x)
-        b.ret(result)
-        fn = b.build()
-        print(fn)
-    """
+    """Fluent builder for linear-IR functions."""
 
     def __init__(self, name: str) -> None:
-        self.name      = name
-        self._counter  = 0
+        self.name          = name
+        self._counter      = 0
+        self._label_counter= 0
         self._params:  List[VReg]       = []
         self._blocks:  List[BasicBlock] = []
         self._current: BasicBlock       = self._new_block("entry")
@@ -47,51 +38,85 @@ class FunctionBuilder:
     # ------------------------------------------------------------------
 
     def param(self) -> VReg:
-        """Declare a single function parameter and return its VReg."""
         v = self._fresh()
         self._params.append(v)
         return v
 
     def params(self, n: int) -> List[VReg]:
-        """Declare *n* parameters and return their VRegs."""
         return [self.param() for _ in range(n)]
 
     # ------------------------------------------------------------------
-    # Instructions
+    # Label allocation
+    # ------------------------------------------------------------------
+
+    def new_label(self) -> int:
+        """Allocate a fresh label ID."""
+        lid = self._label_counter
+        self._label_counter += 1
+        return lid
+
+    def alloc_vreg(self) -> VReg:
+        """Allocate a fresh VReg without emitting an instruction.
+        Used to pre-reserve a result slot for if-then-else merges.
+        """
+        return self._fresh()
+
+    # ------------------------------------------------------------------
+    # Arithmetic instructions
     # ------------------------------------------------------------------
 
     def load_imm(self, value: int) -> VReg:
-        """Emit  result = <immediate>."""
         result = self._fresh()
         self._emit(Instr(Opcode.LOAD_IMM, result, [Imm(value)]))
         return result
 
     def move(self, src: VReg) -> VReg:
-        """Emit  result = src  (register copy)."""
         result = self._fresh()
         self._emit(Instr(Opcode.MOVE, result, [src]))
         return result
 
+    def move_to(self, dst: VReg, src: VReg) -> None:
+        """Emit a move into a pre-existing destination VReg."""
+        self._emit(Instr(Opcode.MOVE, dst, [src]))
+
     def add(self, lhs: VReg, rhs: Union[VReg, Imm]) -> VReg:
-        """Emit  result = lhs + rhs."""
         result = self._fresh()
         self._emit(Instr(Opcode.ADD, result, [lhs, rhs]))
         return result
 
-    def mul(self, lhs: VReg, rhs: Union[VReg, Imm]) -> VReg:
-        """Emit  result = lhs * rhs."""
-        result = self._fresh()
-        self._emit(Instr(Opcode.MUL, result, [lhs, rhs]))
-        return result
-
     def sub(self, lhs: VReg, rhs: Union[VReg, Imm]) -> VReg:
-        """Emit  result = lhs - rhs."""
         result = self._fresh()
         self._emit(Instr(Opcode.SUB, result, [lhs, rhs]))
         return result
 
+    def mul(self, lhs: VReg, rhs: Union[VReg, Imm]) -> VReg:
+        result = self._fresh()
+        self._emit(Instr(Opcode.MUL, result, [lhs, rhs]))
+        return result
+
+    # ------------------------------------------------------------------
+    # Comparison and control flow
+    # ------------------------------------------------------------------
+
+    def cmp(self, lhs: VReg, rhs: Union[VReg, Imm]) -> None:
+        self._emit(Instr(Opcode.CMP, None, [lhs, rhs]))
+
+    def jge(self, label_id: int) -> None:
+        self._emit(Instr(Opcode.JGE, None, [LabelRef(label_id)]))
+
+    def jle(self, label_id: int) -> None:
+        self._emit(Instr(Opcode.JLE, None, [LabelRef(label_id)]))
+
+    def jne(self, label_id: int) -> None:
+        self._emit(Instr(Opcode.JNE, None, [LabelRef(label_id)]))
+
+    def jmp(self, label_id: int) -> None:
+        self._emit(Instr(Opcode.JMP, None, [LabelRef(label_id)]))
+
+    def place_label(self, label_id: int) -> None:
+        self._emit(Instr(Opcode.LABEL, None, [LabelRef(label_id)]))
+
     def ret(self, value: VReg) -> None:
-        """Emit  ret value  (terminates the current block)."""
         self._emit(Instr(Opcode.RET, None, [value]))
 
     # ------------------------------------------------------------------
@@ -99,5 +124,4 @@ class FunctionBuilder:
     # ------------------------------------------------------------------
 
     def build(self) -> Function:
-        """Return the completed Function."""
         return Function(self.name, self._params, self._blocks)

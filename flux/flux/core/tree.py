@@ -42,3 +42,35 @@ class Mul(Expr):
     """Multiplication: left * right."""
     left:  Expr
     right: Expr
+
+
+@dataclass(frozen=True)
+class Lt(Expr):
+    """Less-than comparison: left < right."""
+    left:  Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class Gt(Expr):
+    """Greater-than comparison: left > right."""
+    left:  Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class Eq(Expr):
+    """Equality comparison: left = right."""
+    left:  Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class If(Expr):
+    """Conditional expression: if cond then then_ else else_.
+
+    cond must be a Lt, Gt, or Eq node.
+    """
+    cond:  Expr
+    then_: Expr
+    else_: Expr

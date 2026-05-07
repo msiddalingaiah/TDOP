@@ -71,6 +71,26 @@ class Allocator(ABC):
                     emitter.mov(dst, lhs)
                 emitter.add(dst, rhs)
 
+            case Opcode.CMP:
+                lhs = reg(instr.operands[0])
+                rhs = resolve(instr.operands[1])
+                emitter.cmp(lhs, rhs)
+
+            case Opcode.JGE:
+                emitter.jge(instr.operands[0].id)
+
+            case Opcode.JLE:
+                emitter.jle(instr.operands[0].id)
+
+            case Opcode.JNE:
+                emitter.jne(instr.operands[0].id)
+
+            case Opcode.JMP:
+                emitter.jmp(instr.operands[0].id)
+
+            case Opcode.LABEL:
+                emitter.place_label(instr.operands[0].id)
+
             case Opcode.MUL:
                 dst = reg(instr.result)
                 lhs = reg(instr.operands[0])

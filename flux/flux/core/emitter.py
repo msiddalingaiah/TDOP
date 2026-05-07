@@ -1,11 +1,9 @@
 from __future__ import annotations
+import struct
 from abc import ABC, abstractmethod
 
 from flux.core.operands import Operand
 from flux.core.target import Target
-
-
-_Imm = None   # forward reference; avoid circular import
 
 
 class Emitter(ABC):
@@ -13,13 +11,39 @@ class Emitter(ABC):
 
     def __init__(self, target: Target) -> None:
         self.target = target
-        self._buf: bytearray = bytearray()
+        self._buf:       bytearray       = bytearray()
+        self._label_pos: dict[int, int]  = {}
+        self._fixups:    dict[int, list] = {}
 
     def get_code(self) -> bytes:
         return bytes(self._buf)
 
     def _emit(self, *bytes_: int) -> None:
         self._buf.extend(bytes_)
+
+    # ------------------------------------------------------------------
+    # Label fixup helpers
+    # ------------------------------------------------------------------
+
+    def _register_fixup(self, label_id: int) -> None:
+        """Append a 4-byte placeholder and record it as a fixup."""
+        if label_id not in self._fixups:
+            self._fixups[label_id] = []
+        self._fixups[label_id].append(len(self._buf))
+        self._buf.extend(b'\x00\x00\x00\x00')
+
+    def _resolve_label(self, label_id: int) -> None:
+        """Record the current position as label_id's address and patch fixups."""
+        pos = len(self._buf)
+        self._label_pos[label_id] = pos
+        for fixup in self._fixups.get(label_id, []):
+            source = fixup + 4
+            offset = pos - source
+            struct.pack_into('<i', self._buf, fixup, offset)
+
+    # ------------------------------------------------------------------
+    # Arithmetic
+    # ------------------------------------------------------------------
 
     @abstractmethod
     def mov(self, dst: Operand, src: Operand) -> None: ...
@@ -39,5 +63,43 @@ class Emitter(ABC):
     @abstractmethod
     def pop(self, dst: Operand) -> None: ...
 
+    # ------------------------------------------------------------------
+    # Comparison and control flow
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def cmp(self, dst: Operand, src: Operand) -> None: ...
+
+    @abstractmethod
+    def jge(self, label_id: int) -> None: ...
+
+    @abstractmethod
+    def jle(self, label_id: int) -> None: ...
+
+    @abstractmethod
+    def jne(self, label_id: int) -> None: ...
+
+    @abstractmethod
+    def jmp(self, label_id: int) -> None: ...
+
+    @abstractmethod
+    def place_label(self, label_id: int) -> None: ...
+
     @abstractmethod
     def ret(self) -> None: ...
+
+    # ------------------------------------------------------------------
+    # Stack frame and spill support
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def emit_prologue(self, frame_size: int) -> None: ...
+
+    @abstractmethod
+    def emit_epilogue(self) -> None: ...
+
+    @abstractmethod
+    def load_spill(self, dst: Operand, slot) -> None: ...
+
+    @abstractmethod
+    def store_spill(self, src: Operand, slot) -> None: ...

@@ -6,7 +6,7 @@ from typing import Dict, List, Union
 from flux.core.operands import Imm
 from flux.core.ir       import VReg
 from flux.core.builder  import FunctionBuilder
-from flux.core.tree     import Expr, Const, Arg, Add, Sub, Mul
+from flux.core.tree     import Expr, Const, Arg, Add, Sub, Mul, Lt, Gt, Eq, If
 
 
 # ------------------------------------------------------------------
@@ -75,16 +75,17 @@ class BurgSelector:
 
     Rule table
     ----------
-    ID  Pattern           NT   Cost
-     1  Const             imm   0    constant used directly as immediate
-     2  Const             reg   1    load constant into a register
-     3  Arg               reg   0    argument already in a register
-     4  Add(reg, reg)     reg   1    add two registers
-     5  Add(reg, imm)     reg   1    add register and immediate
-     6  Sub(reg, reg)     reg   1    subtract two registers
-     7  Sub(reg, imm)     reg   1    subtract immediate from register
-     8  Mul(reg, reg)     reg   1    multiply two registers
-     9  Mul(reg, imm)     reg   1    multiply register by immediate (3-operand imul)
+    ID  Pattern               NT   Cost
+     1  Const                 imm   0    constant used directly as immediate
+     2  Const                 reg   1    load constant into a register
+     3  Arg                   reg   0    argument already in a register
+     4  Add(reg, reg)         reg   1    add two registers
+     5  Add(reg, imm)         reg   1    add register and immediate
+     6  Sub(reg, reg)         reg   1    subtract two registers
+     7  Sub(reg, imm)         reg   1    subtract immediate from register
+     8  Mul(reg, reg)         reg   1    multiply two registers
+     9  Mul(reg, imm)         reg   1    multiply register by immediate (3-operand imul)
+    10  If(Lt/Gt/Eq, reg, reg) reg  1    conditional: cmp + branch + merge
     """
 
     def __init__(self, params: List[VReg], builder: FunctionBuilder) -> None:
@@ -158,6 +159,19 @@ class BurgSelector:
                 c9 = lc + rs[NT.IMM].cost + 1
                 state = _better(state, NT.REG, c9, 9)
 
+            case If(cond=c, then_=t, else_=e) if isinstance(c, (Lt, Gt, Eq)):
+                # rule 10: If(comparison, expr, expr) → reg
+                lc  = self._label(c.left)[NT.REG].cost
+                rs  = self._label(c.right)
+                rc  = min(rs[NT.REG].cost, rs[NT.IMM].cost)
+                tc  = self._label(t)[NT.REG].cost
+                ec  = self._label(e)[NT.REG].cost
+                c10 = lc + rc + tc + ec + 1
+                state = _better(state, NT.REG, c10, 10)
+
+            case Lt() | Gt() | Eq():
+                pass  # only valid as condition inside If
+
         self._cache[key] = state
         return state
 
@@ -228,6 +242,53 @@ class BurgSelector:
                 rhs = self._reduce(node.right, NT.IMM)
                 assert isinstance(lhs, VReg) and isinstance(rhs, Imm)
                 return self.builder.mul(lhs, rhs)
+
+            case 10:  # If(cond, then, else) → reg
+                assert isinstance(node, If)
+                cond, then_, else_ = node.cond, node.then_, node.else_
+
+                # Reduce condition operands — pick cheaper NT for rhs
+                lhs = self._reduce(cond.left, NT.REG)
+                cond_rs = self._cache[id(cond.right)]
+                rhs_nt  = NT.IMM if cond_rs[NT.IMM].cost <= cond_rs[NT.REG].cost \
+                          else NT.REG
+                rhs = self._reduce(cond.right, rhs_nt)
+
+                # Emit comparison
+                self.builder.cmp(lhs, rhs)
+
+                # Allocate branch targets
+                else_label  = self.builder.new_label()
+                merge_label = self.builder.new_label()
+
+                # Conditional jump: invert condition → jump to else branch
+                if isinstance(cond, Lt):
+                    self.builder.jge(else_label)   # not (lhs < rhs) → lhs >= rhs
+                elif isinstance(cond, Gt):
+                    self.builder.jle(else_label)   # not (lhs > rhs) → lhs <= rhs
+                elif isinstance(cond, Eq):
+                    self.builder.jne(else_label)   # not (lhs = rhs)
+                else:
+                    raise RuntimeError(f"Unsupported condition: {type(cond)}")
+
+                # Pre-allocate result VReg shared by both branches
+                result = self.builder.alloc_vreg()
+
+                # Then branch
+                then_val = self._reduce(then_, NT.REG)
+                assert isinstance(then_val, VReg)
+                self.builder.move_to(result, then_val)
+                self.builder.jmp(merge_label)
+
+                # Else branch
+                self.builder.place_label(else_label)
+                else_val = self._reduce(else_, NT.REG)
+                assert isinstance(else_val, VReg)
+                self.builder.move_to(result, else_val)
+
+                # Merge point
+                self.builder.place_label(merge_label)
+                return result
 
             case _:
                 raise RuntimeError(f"Unknown rule id {entry.rule_id}")

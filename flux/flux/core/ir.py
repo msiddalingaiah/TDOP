@@ -21,6 +21,19 @@ class VReg:
 
 
 # ------------------------------------------------------------------
+# Label reference
+# ------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class LabelRef:
+    """A reference to a branch target label, identified by integer ID."""
+    id: int
+
+    def __repr__(self) -> str:
+        return f"L{self.id}"
+
+
+# ------------------------------------------------------------------
 # Opcodes
 # ------------------------------------------------------------------
 
@@ -30,6 +43,12 @@ class Opcode(Enum):
     ADD      = auto()   # result = lhs + rhs
     SUB      = auto()   # result = lhs - rhs
     MUL      = auto()   # result = lhs * rhs
+    CMP      = auto()   # compare lhs with rhs  (no result, sets flags)
+    JGE      = auto()   # jump if ≥  (after cmp)
+    JLE      = auto()   # jump if ≤  (after cmp)
+    JNE      = auto()   # jump if ≠  (after cmp)
+    JMP      = auto()   # unconditional jump
+    LABEL    = auto()   # label definition
     RET      = auto()   # return value  (no result)
 
 
@@ -37,8 +56,8 @@ class Opcode(Enum):
 # Instruction
 # ------------------------------------------------------------------
 
-# An operand in the linear IR is either a virtual register or an immediate.
-Operand = Union[VReg, Imm]
+# An operand in the linear IR is a virtual register, an immediate, or a label ref.
+Operand = Union[VReg, Imm, LabelRef]
 
 
 @dataclass

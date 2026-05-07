@@ -2,7 +2,7 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional
 
-from flux.core.tree import Expr, Const, Arg, Add, Sub, Mul
+from flux.core.tree import Expr, Const, Arg, Add, Sub, Mul, Lt, Gt, Eq, If
 
 
 def _tokenize(s: str) -> List[str]:
@@ -31,6 +31,15 @@ def _parse_tokens(tokens: List[str], args: Dict[str, int]) -> Expr:
             raise ValueError(f"Missing closing ')' for operator '{op}'")
         tokens.pop(0)   # consume ')'
 
+        # if is a 3-operand special form
+        if op == 'if':
+            if len(operands) != 3:
+                raise ValueError(
+                    f"'if' requires exactly 3 subforms: (if cond then else), "
+                    f"got {len(operands)}"
+                )
+            return If(operands[0], operands[1], operands[2])
+
         if len(operands) != 2:
             raise ValueError(
                 f"Operator '{op}' requires exactly 2 operands, "
@@ -41,6 +50,9 @@ def _parse_tokens(tokens: List[str], args: Dict[str, int]) -> Expr:
             case '+': return Add(operands[0], operands[1])
             case '-': return Sub(operands[0], operands[1])
             case '*': return Mul(operands[0], operands[1])
+            case '<': return Lt(operands[0], operands[1])
+            case '>': return Gt(operands[0], operands[1])
+            case '=': return Eq(operands[0], operands[1])
             case _:   raise ValueError(f"Unknown operator: '{op}'")
 
     elif token == ')':

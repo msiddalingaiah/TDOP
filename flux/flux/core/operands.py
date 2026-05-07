@@ -42,3 +42,12 @@ class Mem(Operand):
         if self.disp:
             parts.append(hex(self.disp))
         return f"[{' + '.join(parts)}]"
+
+
+@dataclass(frozen=True)
+class SpillSlot:
+    """A stack spill slot at [RBP + offset] where offset is negative."""
+    offset: int
+
+    def __repr__(self) -> str:
+        return f"[rbp{self.offset:+d}]"
