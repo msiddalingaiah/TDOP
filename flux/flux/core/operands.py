@@ -51,3 +51,18 @@ class SpillSlot:
 
     def __repr__(self) -> str:
         return f"[rbp{self.offset:+d}]"
+
+
+@dataclass(frozen=True)
+class MutableVar:
+    """A mutable variable slot at [RBP + offset].
+
+    index  — 0-based allocation order (first var declared = 0).
+    offset — precomputed RBP-relative byte offset (always negative).
+             offset = -(index + 1) * 8
+    """
+    index:  int
+    offset: int
+
+    def __repr__(self) -> str:
+        return f"var{self.index}[rbp{self.offset:+d}]"

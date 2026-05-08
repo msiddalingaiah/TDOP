@@ -74,3 +74,69 @@ class If(Expr):
     cond:  Expr
     then_: Expr
     else_: Expr
+
+
+@dataclass(frozen=True)
+class Let(Expr):
+    """Let binding: evaluate value, bind it to name, evaluate body.
+
+    Implements let* semantics — each binding is in scope for subsequent
+    bindings and the body.  Bindings are immutable (single assignment).
+    No memory operations are emitted; the bound value lives in a VReg
+    and is spilled by the allocator only if register pressure demands it.
+    """
+    name:  str
+    value: Expr
+    body:  Expr
+
+
+@dataclass(frozen=True)
+class Var(Expr):
+    """A reference to a let-bound or mutable variable."""
+    name: str
+
+
+@dataclass(frozen=True)
+class MutVar(Expr):
+    """Mutable variable declaration: (var name init body).
+
+    Allocates a stack slot for name, stores init to it, then evaluates
+    body with name in scope as a mutable variable.
+    """
+    name: str
+    init: Expr
+    body: Expr
+
+
+@dataclass(frozen=True)
+class SetBang(Expr):
+    """Mutable variable assignment: (set! name value).
+
+    Stores value to the mutable variable named name and returns the
+    new value.  name must be in scope as a mutable variable.
+    """
+    name:  str
+    value: Expr
+
+
+@dataclass(frozen=True)
+class Begin(Expr):
+    """Expression sequencing: (begin first second).
+
+    Evaluates first for its side effects, then evaluates and returns
+    second.
+    """
+    first:  Expr
+    second: Expr
+
+
+@dataclass(frozen=True)
+class While(Expr):
+    """While loop: evaluate body while cond is true, return 0.
+
+    cond must be a Lt, Gt, or Eq node.
+    body is evaluated for side effects each iteration.
+    Mutable variables (var/set!) carry state across iterations.
+    """
+    cond: Expr
+    body: Expr

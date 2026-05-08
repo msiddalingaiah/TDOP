@@ -71,6 +71,20 @@ class Allocator(ABC):
                     emitter.mov(dst, lhs)
                 emitter.add(dst, rhs)
 
+            case Opcode.LOAD_VAR:
+                # Load from a mutable variable's stack slot.
+                from flux.core.operands import SpillSlot
+                dst = reg(instr.result)
+                var = instr.operands[0]    # MutableVar
+                emitter.load_spill(dst, SpillSlot(var.offset))
+
+            case Opcode.STORE_VAR:
+                # Store to a mutable variable's stack slot.
+                from flux.core.operands import SpillSlot
+                var = instr.operands[0]    # MutableVar
+                src = reg(instr.operands[1])
+                emitter.store_spill(src, SpillSlot(var.offset))
+
             case Opcode.CMP:
                 lhs = reg(instr.operands[0])
                 rhs = resolve(instr.operands[1])

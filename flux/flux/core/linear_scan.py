@@ -24,19 +24,50 @@ class LiveInterval:
 
 
 def compute_intervals(fn: Function) -> Dict[VReg, LiveInterval]:
+    """Compute a live interval for every VReg in *fn*.
+
+    For loops, back-edges are detected and any variable live at a loop
+    header has its interval extended to cover the entire loop body.
+    This prevents the register allocator from reusing a register that
+    still holds a value needed on the next iteration.
+    """
     intervals: Dict[VReg, LiveInterval] = {}
 
     for p in fn.params:
         intervals[p] = LiveInterval(p, start=-1, end=-1)
 
+    # --- First pass: build initial intervals, record label positions ---
+    label_pos: Dict[int, int] = {}   # label_id → instruction position
     pos = 0
     for block in fn.blocks:
         for instr in block.instrs:
+            if instr.opcode == Opcode.LABEL:
+                label_pos[instr.operands[0].id] = pos
+
             if instr.result is not None and instr.result not in intervals:
                 intervals[instr.result] = LiveInterval(instr.result, pos, pos)
+
             for op in instr.operands:
                 if isinstance(op, VReg) and op in intervals:
                     intervals[op].end = pos
+
+            pos += 1
+
+    # --- Second pass: extend intervals across loop back-edges ---
+    # A back-edge is any branch whose target label appears earlier in
+    # the flat instruction list.  For each such edge (back_pos → header_pos),
+    # any variable that is live at the header (defined before or at it, and
+    # used at or after it) must remain live through the entire loop body.
+    pos = 0
+    for block in fn.blocks:
+        for instr in block.instrs:
+            if instr.opcode in {Opcode.JMP, Opcode.JGE, Opcode.JLE, Opcode.JNE}:
+                target_id  = instr.operands[0].id
+                target_pos = label_pos.get(target_id, pos + 1)
+                if target_pos < pos:          # back-edge detected
+                    for iv in intervals.values():
+                        if iv.start <= target_pos <= iv.end:
+                            iv.end = max(iv.end, pos)
             pos += 1
 
     return intervals
@@ -73,14 +104,12 @@ class LinearScanAllocator(Allocator):
 
     def allocate(self, fn: Function, emitter: Emitter) -> None:
         alloc      = self._build_allocation(fn)
-        has_spills = self._frame_size > 0
+        has_frame  = self._frame_size > 0   # True for spills OR mutable vars
 
-        if has_spills:
+        if has_frame:
             emitter.emit_prologue(self._frame_size)
-            # Parameters are passed in arg registers.  If the allocator later
-            # gave a param's register to a longer-lived interval and spilled
-            # the param itself, we must store the original arg-register value
-            # to the spill slot before anything else overwrites it.
+            # Parameters that were spilled must be stored to their slots
+            # immediately — before any instruction can overwrite the arg register.
             for i, param in enumerate(fn.params):
                 if isinstance(alloc.get(param), SpillSlot):
                     orig_reg = self.target.arg_registers[i]
@@ -88,7 +117,7 @@ class LinearScanAllocator(Allocator):
 
         for block in fn.blocks:
             for instr in block.instrs:
-                if has_spills:
+                if has_frame:
                     self._lower_spilling(instr, alloc, emitter)
                 else:
                     self._lower(instr, alloc, emitter)
@@ -133,14 +162,15 @@ class LinearScanAllocator(Allocator):
             if spill is not iv and spill.end > iv.end:
                 reg = alloc[spill.vreg]
                 n_spill_slots += 1
-                alloc[spill.vreg] = SpillSlot(-n_spill_slots * 8)
+                # Spill slots start below the mutable-var area.
+                alloc[spill.vreg] = SpillSlot(-(fn.n_vars + n_spill_slots) * 8)
                 active.remove(spill)
                 alloc[iv.vreg] = reg
                 active.append(iv)
                 active.sort(key=lambda x: x.end)
             else:
                 n_spill_slots += 1
-                alloc[iv.vreg] = SpillSlot(-n_spill_slots * 8)
+                alloc[iv.vreg] = SpillSlot(-(fn.n_vars + n_spill_slots) * 8)
 
         non_param = sorted(
             [iv for vreg, iv in intervals.items() if vreg not in alloc],
@@ -164,8 +194,10 @@ class LinearScanAllocator(Allocator):
                 active.append(iv)
                 active.sort(key=lambda x: x.end)
 
-        raw = n_spill_slots * 8
-        self._frame_size = (raw + 15) & ~15 if n_spill_slots > 0 else 0
+        # Total frame = mutable var area + spill area, 16-byte aligned.
+        total_slots = fn.n_vars + n_spill_slots
+        raw = total_slots * 8
+        self._frame_size = (raw + 15) & ~15 if total_slots > 0 else 0
         return alloc
 
     # ------------------------------------------------------------------

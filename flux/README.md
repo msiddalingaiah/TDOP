@@ -8,6 +8,8 @@ x86-64 machine code — all in memory, with no external tools required.
 (if (< x 0) (* x -1) x)  →  SSA → regalloc → x86-64 bytes → 42
 ```
 
+**41× faster than CPython** on a tight loop over 100 million iterations.
+
 ---
 
 ## What it is
@@ -77,6 +79,111 @@ python -m pytest tests/ -v
 
 ---
 
+## Examples
+
+### Fibonacci (iterative)
+
+```lisp
+(var a 0
+  (var b 1
+    (var i 0
+      (while (< i n)
+        (var tmp (+ a b)
+          (set! a b)
+          (set! b tmp))
+        (set! i (+ i 1)))
+      a)))
+```
+
+```python
+from flux.core.compiler import compile_and_run
+
+compile_and_run("""
+    (var a 0 (var b 1 (var i 0
+      (while (< i n)
+        (var tmp (+ a b) (set! a b) (set! b tmp))
+        (set! i (+ i 1)))
+      a)))
+""", n=10)
+# → 55  (fib(10))
+```
+
+### Absolute value
+
+```python
+compile_and_run("(if (< x 0) (* x -1) x)", x=-42)
+# → 42
+```
+
+### Sum with let
+
+```python
+compile_and_run("(let ((a (* x x)) (b (* y y))) (+ a b))", x=3, y=4)
+# → 25
+```
+
+### Clamp
+
+```python
+compile_and_run("(if (< x 0) 0 (if (> x 100) 100 x))", x=150)
+# → 100
+```
+
+---
+
+## Performance
+
+Flux compiles to native x86-64 and executes without any interpreter overhead.
+Summing the integers from 0 to 99,999,999:
+
+```python
+import time
+from flux.core.compiler import compile_and_run
+
+expr = """
+    (var i 0
+      (var sum 0
+        (while (< i n)
+          (set! sum (+ sum i))
+          (set! i (+ i 1)))
+        sum))
+"""
+
+# Flux: native x86-64
+t0 = time.perf_counter()
+result = compile_and_run(expr, n=100_000_000)
+flux_time = time.perf_counter() - t0
+
+# Python: interpreter
+def python_sum(n):
+    i = s = 0
+    while i < n:
+        s += i; i += 1
+    return s
+
+t0 = time.perf_counter()
+python_sum(100_000_000)
+py_time = time.perf_counter() - t0
+
+print(f"Flux:   {flux_time*1000:.0f} ms")
+print(f"Python: {py_time*1000:.0f} ms")
+print(f"Speedup: {py_time/flux_time:.1f}×")
+```
+
+Typical output:
+```
+Flux:    161 ms
+Python: 6593 ms
+Speedup: 41.1×
+```
+
+Run the benchmark as a test:
+```bash
+python -m pytest tests/test_loops.py::TestBenchmark -v -s
+```
+
+---
+
 ## The REPL
 
 ```
@@ -117,7 +224,7 @@ flux> quit
 Bye.
 ```
 
-### Operators
+### Operators and forms
 
 | Syntax | Operation |
 |---|---|
@@ -128,6 +235,11 @@ Bye.
 | `(> a b)` | greater-than comparison |
 | `(= a b)` | equality comparison |
 | `(if cond then else)` | conditional expression |
+| `(let ((x e)) body ...)` | immutable binding |
+| `(var x init body ...)` | mutable variable |
+| `(set! x expr)` | assign to mutable variable, returns new value |
+| `(begin e1 e2)` | sequence two expressions, return second |
+| `(while cond body ...)` | loop while condition holds |
 
 Operands can be integer literals, bound variable names, or nested expressions.
 `_` always holds the result of the last evaluation.
@@ -285,21 +397,20 @@ automatically from `sys.platform` at runtime.
 
 | Component | Status |
 |---|---|
-| x86-64 emitter | ✅ mov, add, sub, imul, push, pop, cmp, jge, jle, jne, jmp, ret, spill load/store |
-| Tree IR | ✅ Const, Arg, Add, Sub, Mul, Lt, Gt, Eq, If |
-| BURG selector | ✅ optimal tiling, imm/reg non-terminals, conditionals (rules 1–10) |
-| Linear IR | ✅ flat instruction list with labels, branches, and VRegs |
+| x86-64 emitter | ✅ mov, add, sub, imul, push, pop, cmp, jge, jle, jne, jmp, ret, spill/var load/store |
+| Tree IR | ✅ Const, Arg, Add, Sub, Mul, Lt, Gt, Eq, If, Let, Var, MutVar, SetBang, Begin, While |
+| BURG selector | ✅ optimal tiling, imm/reg non-terminals, all control flow (rules 1–16) |
+| Linear IR | ✅ flat instruction list with labels, branches, VRegs, LOAD_VAR, STORE_VAR |
 | SSA construction | ✅ CFG splitting, RPO, dominators (Cooper 2001), phi insertion, renaming |
 | SSA destruction | ✅ phi → parallel copies, sequentialisation, flat IR reconstruction |
 | Trivial allocator | ✅ first-seen order, no spilling |
 | Linear scan allocator | ✅ live intervals, register reuse, stack spilling |
-| Stack frame | ✅ prologue/epilogue, RBP-relative spill slots, 16-byte alignment |
-| S-expression parser | ✅ +, -, *, <, >, =, if, integer literals, named args |
+| Stack frame | ✅ prologue/epilogue, mutable var slots, spill slots, 16-byte alignment |
+| S-expression parser | ✅ +, -, *, <, >, =, if, let, var, set!, begin, integer literals, named args |
 | REPL | ✅ def, :ir, :vars, :clear |
 | Windows support | ✅ VirtualAlloc, Microsoft x64 ABI |
 | Linux support | ✅ mmap, System V AMD64 ABI |
 | SSA optimisations | ❌ DCE, constant propagation, GVN — not yet |
-| Let bindings | ❌ not yet |
 | Function definitions | ❌ not yet |
 | ARM64 target | ❌ not yet |
 
@@ -312,9 +423,12 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-179 tests across 11 test modules, covering encoding, execution, live
-interval computation, register reuse, spilling, BURG rule selection,
-SSA construction and destruction, and end-to-end pipeline correctness.
+267 tests across 14 test modules, covering encoding, execution, live
+interval computation, register reuse, spilling, mutable variable stack
+slots, loop back-edge liveness, BURG rule selection, let and var binding
+semantics, SSA construction and destruction, and end-to-end pipeline
+correctness. Includes a performance benchmark comparing Flux native code
+against CPython.
 
 ---
 

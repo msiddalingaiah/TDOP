@@ -60,8 +60,9 @@ class TestParser:
             parse_expr("(/ 4 2)")
 
     def test_unknown_symbol_raises(self):
+        # An invalid token (not a number, operator, or valid identifier) raises.
         with pytest.raises(ValueError, match="Unknown symbol"):
-            parse_expr("z", args=["x"])
+            parse_expr("123abc")   # not a valid identifier or integer
 
     def test_wrong_arity_raises(self):
         with pytest.raises(ValueError, match="exactly 2 operands"):

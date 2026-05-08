@@ -6,7 +6,9 @@ from typing import Dict, List, Union
 from flux.core.operands import Imm
 from flux.core.ir       import VReg
 from flux.core.builder  import FunctionBuilder
-from flux.core.tree     import Expr, Const, Arg, Add, Sub, Mul, Lt, Gt, Eq, If
+from flux.core.tree     import (Expr, Const, Arg, Add, Sub, Mul,
+                                Lt, Gt, Eq, If, Let, Var,
+                                MutVar, SetBang, Begin, While)
 
 
 # ------------------------------------------------------------------
@@ -86,12 +88,20 @@ class BurgSelector:
      8  Mul(reg, reg)         reg   1    multiply two registers
      9  Mul(reg, imm)         reg   1    multiply register by immediate (3-operand imul)
     10  If(Lt/Gt/Eq, reg, reg) reg  1    conditional: cmp + branch + merge
+    11  Let(name, reg, reg)   reg   0    bind name to value VReg, evaluate body
+    12  Var(name)             reg   0    look up name in let-scope or emit load_var
+    13  MutVar(name, reg, reg) reg  1    allocate slot, store init, evaluate body
+    14  SetBang(name, reg)    reg   1    store value to mutable var, return value
+    15  Begin(reg, reg)       reg   0    evaluate first (side effects), return second
+    16  While(cond, reg)      reg   2    loop: label, cmp, branch, body, jmp-back
     """
 
     def __init__(self, params: List[VReg], builder: FunctionBuilder) -> None:
-        self.params  = params
-        self.builder = builder
-        self._cache: Dict[int, State] = {}   # id(node) → State
+        self.params    = params
+        self.builder   = builder
+        self._cache:   Dict[int, State] = {}   # id(node) → State
+        self.scope:    Dict[str, VReg]  = {}   # immutable let-bound names → VReg
+        self.mut_scope: Dict[str, object] = {} # mutable var names → MutableVar
 
     # ------------------------------------------------------------------
     # Public interface
@@ -171,6 +181,46 @@ class BurgSelector:
 
             case Lt() | Gt() | Eq():
                 pass  # only valid as condition inside If
+
+            case Let(value=v, body=b):
+                # rule 11: Let → reg, cost = value cost + body cost + 0
+                vc  = self._label(v)[NT.REG].cost
+                bc  = self._label(b)[NT.REG].cost
+                c11 = vc + bc
+                state = _better(state, NT.REG, c11, 11)
+
+            case Var():
+                # rule 12: Var → reg, cost 0 (resolved at reduction time)
+                state = _better(state, NT.REG, 0, 12)
+
+            case MutVar(init=v, body=b):
+                # rule 13: MutVar → reg, cost = init + store(1) + body
+                vc  = self._label(v)[NT.REG].cost
+                bc  = self._label(b)[NT.REG].cost
+                c13 = vc + 1 + bc
+                state = _better(state, NT.REG, c13, 13)
+
+            case SetBang(value=v):
+                # rule 14: SetBang → reg, cost = value + store(1)
+                vc  = self._label(v)[NT.REG].cost
+                c14 = vc + 1
+                state = _better(state, NT.REG, c14, 14)
+
+            case Begin(first=f, second=s):
+                # rule 15: Begin → reg, cost = first + second
+                fc  = self._label(f)[NT.REG].cost
+                sc  = self._label(s)[NT.REG].cost
+                c15 = fc + sc
+                state = _better(state, NT.REG, c15, 15)
+
+            case While(cond=c, body=b) if isinstance(c, (Lt, Gt, Eq)):
+                # rule 16: While → reg, cost = cond + body + 2 (cmp + jmp)
+                lc  = self._label(c.left)[NT.REG].cost
+                rs  = self._label(c.right)
+                rc  = min(rs[NT.REG].cost, rs[NT.IMM].cost)
+                bc  = self._label(b)[NT.REG].cost
+                c16 = lc + rc + bc + 2
+                state = _better(state, NT.REG, c16, 16)
 
         self._cache[key] = state
         return state
@@ -289,6 +339,116 @@ class BurgSelector:
                 # Merge point
                 self.builder.place_label(merge_label)
                 return result
+
+            case 11:  # Let(name, value, body) → reg
+                assert isinstance(node, Let)
+                # Evaluate the bound value.
+                val_vreg = self._reduce(node.value, NT.REG)
+                assert isinstance(val_vreg, VReg)
+
+                # Extend scope: save any previous binding for the same name.
+                prev = self.scope.get(node.name)
+                self.scope[node.name] = val_vreg
+
+                # Evaluate the body with the extended scope.
+                body_result = self._reduce(node.body, NT.REG)
+
+                # Restore scope.
+                if prev is not None:
+                    self.scope[node.name] = prev
+                else:
+                    del self.scope[node.name]
+
+                assert isinstance(body_result, VReg)
+                return body_result
+
+            case 12:  # Var(name) → reg
+                assert isinstance(node, Var)
+                if node.name in self.mut_scope:
+                    # Mutable variable: emit a load from its stack slot.
+                    return self.builder.load_var(self.mut_scope[node.name])
+                elif node.name in self.scope:
+                    # Immutable let-binding: return the VReg directly.
+                    return self.scope[node.name]
+                else:
+                    raise RuntimeError(f"Unbound variable: '{node.name!r}'")
+
+            case 13:  # MutVar(name, init, body) → reg
+                assert isinstance(node, MutVar)
+                var       = self.builder.alloc_mutable_var()
+                init_vreg = self._reduce(node.init, NT.REG)
+                assert isinstance(init_vreg, VReg)
+                self.builder.store_var(var, init_vreg)
+
+                prev = self.mut_scope.get(node.name)
+                self.mut_scope[node.name] = var
+                body_vreg = self._reduce(node.body, NT.REG)
+                if prev is not None:
+                    self.mut_scope[node.name] = prev
+                else:
+                    del self.mut_scope[node.name]
+
+                assert isinstance(body_vreg, VReg)
+                return body_vreg
+
+            case 14:  # SetBang(name, value) → reg
+                assert isinstance(node, SetBang)
+                if node.name not in self.mut_scope:
+                    raise RuntimeError(
+                        f"(set! {node.name!r} ...) — '{node.name}' is not a "
+                        f"mutable variable"
+                    )
+                var       = self.mut_scope[node.name]
+                val_vreg  = self._reduce(node.value, NT.REG)
+                assert isinstance(val_vreg, VReg)
+                self.builder.store_var(var, val_vreg)
+                return val_vreg   # set! returns the assigned value
+
+            case 15:  # Begin(first, second) → reg
+                assert isinstance(node, Begin)
+                self._reduce(node.first, NT.REG)   # side effects only
+                return self._reduce(node.second, NT.REG)
+
+            case 16:  # While(cond, body) → reg
+                assert isinstance(node, While)
+                cond = node.cond
+
+                loop_start = self.builder.new_label()
+                loop_exit  = self.builder.new_label()
+
+                # ── loop header ──────────────────────────────────────────
+                self.builder.place_label(loop_start)
+
+                # Evaluate condition operands.
+                lhs = self._reduce(cond.left, NT.REG)
+                cond_rs = self._cache[id(cond.right)]
+                rhs_nt  = NT.IMM if cond_rs[NT.IMM].cost <= cond_rs[NT.REG].cost \
+                          else NT.REG
+                rhs = self._reduce(cond.right, rhs_nt)
+
+                self.builder.cmp(lhs, rhs)
+
+                # Jump to exit if condition is false (inverted).
+                if isinstance(cond, Lt):
+                    self.builder.jge(loop_exit)
+                elif isinstance(cond, Gt):
+                    self.builder.jle(loop_exit)
+                elif isinstance(cond, Eq):
+                    self.builder.jne(loop_exit)
+                else:
+                    raise RuntimeError(f"Unsupported loop condition: {type(cond)}")
+
+                # ── loop body ─────────────────────────────────────────────
+                self._reduce(node.body, NT.REG)   # side effects only
+
+                # ── back-edge ─────────────────────────────────────────────
+                self.builder.jmp(loop_start)
+
+                # ── loop exit ─────────────────────────────────────────────
+                self.builder.place_label(loop_exit)
+
+                # While returns 0 (the result is usually discarded).
+                return self.builder.load_imm(0)
 
             case _:
                 raise RuntimeError(f"Unknown rule id {entry.rule_id}")

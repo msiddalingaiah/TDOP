@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import List, Union
 
-from flux.core.operands import Imm
+from flux.core.operands import Imm, MutableVar
 from flux.core.ir import VReg, LabelRef, Opcode, Instr, BasicBlock, Function
 
 
@@ -9,9 +9,10 @@ class FunctionBuilder:
     """Fluent builder for linear-IR functions."""
 
     def __init__(self, name: str) -> None:
-        self.name          = name
-        self._counter      = 0
-        self._label_counter= 0
+        self.name           = name
+        self._counter       = 0
+        self._label_counter = 0
+        self._n_vars        = 0   # number of mutable variable slots allocated
         self._params:  List[VReg]       = []
         self._blocks:  List[BasicBlock] = []
         self._current: BasicBlock       = self._new_block("entry")
@@ -119,9 +120,32 @@ class FunctionBuilder:
     def ret(self, value: VReg) -> None:
         self._emit(Instr(Opcode.RET, None, [value]))
 
+    def alloc_mutable_var(self) -> MutableVar:
+        """Allocate a new mutable variable stack slot.
+
+        Slots are laid out below RBP in allocation order:
+            var 0 → [rbp - 8]
+            var 1 → [rbp - 16]  etc.
+        Spill slots (if any) are placed below the last var slot.
+        """
+        index  = self._n_vars
+        offset = -(index + 1) * 8
+        self._n_vars += 1
+        return MutableVar(index, offset)
+
+    def load_var(self, var: MutableVar) -> VReg:
+        """Emit  result = [rbp + var.offset]  (mutable variable read)."""
+        result = self._fresh()
+        self._emit(Instr(Opcode.LOAD_VAR, result, [var]))
+        return result
+
+    def store_var(self, var: MutableVar, value: VReg) -> None:
+        """Emit  [rbp + var.offset] = value  (mutable variable write)."""
+        self._emit(Instr(Opcode.STORE_VAR, None, [var, value]))
+
     # ------------------------------------------------------------------
     # Finalise
     # ------------------------------------------------------------------
 
     def build(self) -> Function:
-        return Function(self.name, self._params, self._blocks)
+        return Function(self.name, self._params, self._blocks, self._n_vars)

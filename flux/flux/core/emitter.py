@@ -26,11 +26,23 @@ class Emitter(ABC):
     # ------------------------------------------------------------------
 
     def _register_fixup(self, label_id: int) -> None:
-        """Append a 4-byte placeholder and record it as a fixup."""
-        if label_id not in self._fixups:
-            self._fixups[label_id] = []
-        self._fixups[label_id].append(len(self._buf))
-        self._buf.extend(b'\x00\x00\x00\x00')
+        """Append a 4-byte offset field and resolve it, handling both
+        forward references (patch when label is placed later) and backward
+        references (label already placed — compute offset immediately)."""
+        fixup_pos = len(self._buf)
+
+        if label_id in self._label_pos:
+            # Backward reference: label already placed, resolve immediately.
+            target = self._label_pos[label_id]
+            source = fixup_pos + 4          # address of instruction after jump
+            offset = target - source        # signed relative offset
+            self._buf.extend(struct.pack('<i', offset))
+        else:
+            # Forward reference: write placeholder and record for later.
+            if label_id not in self._fixups:
+                self._fixups[label_id] = []
+            self._fixups[label_id].append(fixup_pos)
+            self._buf.extend(b'\x00\x00\x00\x00')
 
     def _resolve_label(self, label_id: int) -> None:
         """Record the current position as label_id's address and patch fixups."""

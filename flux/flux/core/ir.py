@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import List, Optional, Union
 
-from flux.core.operands import Imm
+from flux.core.operands import Imm, MutableVar
 
 
 # ------------------------------------------------------------------
@@ -38,26 +38,29 @@ class LabelRef:
 # ------------------------------------------------------------------
 
 class Opcode(Enum):
-    LOAD_IMM = auto()   # result = <immediate>
-    MOVE     = auto()   # result = src  (vreg copy)
-    ADD      = auto()   # result = lhs + rhs
-    SUB      = auto()   # result = lhs - rhs
-    MUL      = auto()   # result = lhs * rhs
-    CMP      = auto()   # compare lhs with rhs  (no result, sets flags)
-    JGE      = auto()   # jump if ≥  (after cmp)
-    JLE      = auto()   # jump if ≤  (after cmp)
-    JNE      = auto()   # jump if ≠  (after cmp)
-    JMP      = auto()   # unconditional jump
-    LABEL    = auto()   # label definition
-    RET      = auto()   # return value  (no result)
+    LOAD_IMM  = auto()   # result = <immediate>
+    MOVE      = auto()   # result = src  (vreg copy)
+    ADD       = auto()   # result = lhs + rhs
+    SUB       = auto()   # result = lhs - rhs
+    MUL       = auto()   # result = lhs * rhs
+    LOAD_VAR  = auto()   # result = [rbp + var.offset]  (mutable variable read)
+    STORE_VAR = auto()   # [rbp + var.offset] = value   (mutable variable write, no result)
+    CMP       = auto()   # compare lhs with rhs  (no result, sets flags)
+    JGE       = auto()   # jump if ≥  (after cmp)
+    JLE       = auto()   # jump if ≤  (after cmp)
+    JNE       = auto()   # jump if ≠  (after cmp)
+    JMP       = auto()   # unconditional jump
+    LABEL     = auto()   # label definition
+    RET       = auto()   # return value  (no result)
 
 
 # ------------------------------------------------------------------
 # Instruction
 # ------------------------------------------------------------------
 
-# An operand in the linear IR is a virtual register, an immediate, or a label ref.
-Operand = Union[VReg, Imm, LabelRef]
+# An operand in the linear IR is a virtual register, an immediate,
+# a label ref, or a mutable variable slot.
+Operand = Union[VReg, Imm, LabelRef, MutableVar]
 
 
 @dataclass
@@ -113,6 +116,7 @@ class Function:
     name:   str
     params: List[VReg]
     blocks: List[BasicBlock]
+    n_vars: int = 0   # number of mutable variable stack slots
 
     def __repr__(self) -> str:
         params = ", ".join(repr(p) for p in self.params)

@@ -17,9 +17,11 @@ BANNER = """\
 HELP = """
   Expressions
   ───────────
-  (+ a b)              arithmetic  ( +  -  * )
-  (+ (* x 3) (- y 1))  nested expressions
-  _                    last result
+  (+ a b)                    arithmetic  ( +  -  * )
+  (< a b)                    comparison  ( <  >  = )
+  (if (< x 0) (* x -1) x)   conditional
+  (var x 0 (set! x 42) x)   mutable variable
+  _                          last result
 
   Bindings
   ────────
