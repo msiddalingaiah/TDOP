@@ -9,7 +9,8 @@ from flux.core.builder  import FunctionBuilder
 from flux.core.tree     import (Expr, Const, Arg, Add, Sub, Mul, Div, Mod,
                                 And, Or, Xor, Shl, Shr,
                                 Lt, Gt, Eq, If, Let, Var,
-                                MutVar, SetBang, Begin, While)
+                                MutVar, SetBang, Begin, While,
+                                Call, Defun)
 
 
 # ------------------------------------------------------------------
@@ -107,14 +108,19 @@ class BurgSelector:
     26  Shl(reg, imm)         reg   1    left shift by immediate
     27  Shr(reg, reg)         reg   2    arithmetic right shift (count in CL)
     28  Shr(reg, imm)         reg   1    arithmetic right shift by immediate
+    29  Call(name, args)      reg   2    indirect call through pointer holder
+    30  Defun(name, params, body) reg 1  compile & register function, return 0
     """
 
-    def __init__(self, params: List[VReg], builder: FunctionBuilder) -> None:
-        self.params    = params
-        self.builder   = builder
-        self._cache:   Dict[int, State] = {}   # id(node) → State
-        self.scope:    Dict[str, VReg]  = {}   # immutable let-bound names → VReg
-        self.mut_scope: Dict[str, object] = {} # mutable var names → MutableVar
+    def __init__(self, params: List[VReg], builder: FunctionBuilder,
+                 registry=None, target=None) -> None:
+        self.params     = params
+        self.builder    = builder
+        self.registry   = registry
+        self.target     = target
+        self._cache:    Dict[int, State] = {}
+        self.scope:     Dict[str, VReg]  = {}
+        self.mut_scope: Dict[str, object] = {}
 
     # ------------------------------------------------------------------
     # Public interface
@@ -271,6 +277,18 @@ class BurgSelector:
                 lc, rs = self._label(l)[NT.REG].cost, self._label(r)
                 state = _better(state, NT.REG, lc + rs[NT.REG].cost + 2, 27)
                 state = _better(state, NT.REG, lc + rs[NT.IMM].cost + 1, 28)
+
+            case Call(args=args_tuple):
+                # rule 29: cost = sum of arg costs + 2 (call overhead)
+                cost = 2
+                for arg in args_tuple:
+                    cost += self._label(arg)[NT.REG].cost
+                state = _better(state, NT.REG, cost, 29)
+
+            case Defun(body=b):
+                # rule 30: cost dominated by body compilation
+                bc = self._label(b)[NT.REG].cost
+                state = _better(state, NT.REG, bc + 1, 30)
 
         self._cache[key] = state
         return state
@@ -564,6 +582,49 @@ class BurgSelector:
                 lhs = self._reduce(node.left, NT.REG)
                 rhs = self._reduce(node.right, NT.IMM)
                 return self.builder.shr(lhs, rhs)
+
+            case 29:  # Call(name, args) → reg
+                assert isinstance(node, Call)
+                if self.registry is None:
+                    raise RuntimeError(
+                        f"(call {node.name} ...) requires a FunctionRegistry"
+                    )
+                ptr_addr  = self.registry.get_ptr_holder_addr(node.name)
+                arg_vregs = [self._reduce(a, NT.REG) for a in node.args]
+                assert all(isinstance(v, VReg) for v in arg_vregs)
+                return self.builder.call(ptr_addr, *arg_vregs)
+
+            case 30:  # Defun(name, params, body) → reg (returns 0)
+                assert isinstance(node, Defun)
+                if self.registry is None:
+                    raise RuntimeError(
+                        f"(defun {node.name} ...) requires a FunctionRegistry"
+                    )
+                if self.target is None:
+                    raise RuntimeError(
+                        f"(defun {node.name} ...) requires a target"
+                    )
+                # 1. Declare before compiling so recursive calls can reference it.
+                self.registry.declare(node.name, len(node.params))
+
+                # 2. Compile the body with fresh builder and selector.
+                inner_b  = FunctionBuilder(node.name)
+                inner_ps = inner_b.params(len(node.params))
+                inner_s  = BurgSelector(inner_ps, inner_b,
+                                        registry=self.registry,
+                                        target=self.target)
+                # Bind parameter names so (var x ...) in body resolves to Arg.
+                inner_s.param_names = {name: vreg
+                                       for name, vreg in zip(node.params, inner_ps)}
+                inner_res = inner_s.select(node.body)
+                inner_b.ret(inner_res)
+                fn = inner_b.build()
+
+                # 3. Compile IR → bytes and register.
+                self.registry.compile_and_register(node.name, fn, self.target)
+
+                # 4. defun itself returns 0 in the outer expression.
+                return self.builder.load_imm(0)
 
             case _:
                 raise RuntimeError(f"Unknown rule id {entry.rule_id}")

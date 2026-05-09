@@ -189,3 +189,27 @@ class Shr(Expr):
     """Arithmetic right shift: left >> right (sign-extending)."""
     left:  Expr
     right: Expr
+
+
+@dataclass(frozen=True)
+class Call(Expr):
+    """Function call: (call name arg ...)
+
+    Calls a Flux function registered in the FunctionRegistry.
+    args is a tuple of Expr nodes (one per argument).
+    """
+    name: str
+    args: tuple   # Tuple[Expr, ...]
+
+
+@dataclass(frozen=True)
+class Defun(Expr):
+    """Function definition: (defun name (params ...) body ...)
+
+    Compiles the body as a named function, registers it in the
+    FunctionRegistry, and returns 0 as its value.
+    params is a tuple of parameter name strings.
+    """
+    name:   str
+    params: tuple   # Tuple[str, ...]
+    body:   Expr

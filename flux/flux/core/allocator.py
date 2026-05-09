@@ -105,6 +105,28 @@ class Allocator(ABC):
             case Opcode.LABEL:
                 emitter.place_label(instr.operands[0].id)
 
+            case Opcode.CALL:
+                ptr_addr = instr.operands[0].value   # int: ptr_holder address
+                arg_ops  = instr.operands[1:]        # VRegs for arguments
+
+                # Move each argument to its calling-convention register.
+                # Simple sequential approach — correct for non-conflicting cases.
+                for i, op in enumerate(arg_ops):
+                    if isinstance(op, VReg):
+                        src     = reg(op)
+                        dst_reg = emitter.target.arg_registers[i]
+                        if src != dst_reg:
+                            emitter.mov(dst_reg, src)
+
+                emitter.call_ptr(ptr_addr)
+
+                # Move return value (RAX) to the result VReg's register.
+                if instr.result is not None:
+                    dst     = reg(instr.result)
+                    ret_reg = emitter.target.return_register
+                    if dst != ret_reg:
+                        emitter.mov(dst, ret_reg)
+
             case Opcode.BAND:
                 dst, lhs = reg(instr.result), reg(instr.operands[0])
                 rhs = resolve(instr.operands[1])

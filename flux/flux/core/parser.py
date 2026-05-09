@@ -5,7 +5,8 @@ from typing import Dict, List, Optional
 from flux.core.tree import (Expr, Const, Arg, Add, Sub, Mul, Div, Mod,
                             And, Or, Xor, Shl, Shr,
                             Lt, Gt, Eq, If, Let, Var,
-                            MutVar, SetBang, Begin, While)
+                            MutVar, SetBang, Begin, While,
+                            Call, Defun)
 
 
 _VALID_NAME = re.compile(r'^[a-zA-Z_]\w*$')
@@ -85,6 +86,12 @@ def _parse_tokens(tokens: List[str], args: Dict[str, int]) -> Expr:
         if op == 'while':
             return _parse_while(tokens, args)
 
+        if op == 'defun':
+            return _parse_defun(tokens, args)
+
+        if op == 'call':
+            return _parse_call(tokens, args)
+
         # ------------------------------------------------------------------
         # Binary operators
         # ------------------------------------------------------------------
@@ -138,6 +145,70 @@ def _parse_tokens(tokens: List[str], args: Dict[str, int]) -> Expr:
             return Var(token)
 
         raise ValueError(f"Unknown symbol: '{token}'")
+
+
+def _parse_defun(tokens: List[str], args: Dict[str, int]) -> Expr:
+    """Parse  (defun name (param ...) body ...)  after '(defun' consumed."""
+    if not tokens or tokens[0] == ')':
+        raise ValueError("'defun' requires a name")
+    name = tokens.pop(0)
+    if not _VALID_NAME.match(name):
+        raise ValueError(f"'defun' name must be a valid identifier, got '{name}'")
+
+    # Parse parameter list: ( param ... )
+    if not tokens or tokens[0] != '(':
+        raise ValueError("'defun' requires a parameter list '(params ...)'")
+    tokens.pop(0)   # consume '('
+
+    params: List[str] = []
+    while tokens and tokens[0] != ')':
+        p = tokens.pop(0)
+        if not _VALID_NAME.match(p):
+            raise ValueError(f"'defun' parameter must be a valid name, got '{p}'")
+        params.append(p)
+    if not tokens:
+        raise ValueError("Missing ')' for defun parameter list")
+    tokens.pop(0)   # consume ')'
+
+    # Body: parse with params as arg-like names (they'll become Arg nodes).
+    # We DON'T include them in args (they're not outer-function args).
+    # Instead they become indices 0, 1, ... in the inner function's params.
+    body_args  = {p: i for i, p in enumerate(params)}
+    # Outer args can still be referenced but would be wrong semantically;
+    # defun bodies should only use their own params + let/var bindings.
+
+    exprs: List[Expr] = []
+    while tokens and tokens[0] != ')':
+        exprs.append(_parse_tokens(tokens, body_args))
+    if not exprs:
+        raise ValueError("'defun' requires at least one body expression")
+    if not tokens or tokens[0] != ')':
+        raise ValueError("Missing ')' for 'defun'")
+    tokens.pop(0)   # consume ')'
+
+    body = exprs[-1]
+    for e in reversed(exprs[:-1]):
+        body = Begin(e, body)
+
+    return Defun(name, tuple(params), body)
+
+
+def _parse_call(tokens: List[str], args: Dict[str, int]) -> Expr:
+    """Parse  (call name arg ...)  after '(call' consumed."""
+    if not tokens or tokens[0] == ')':
+        raise ValueError("'call' requires a function name")
+    name = tokens.pop(0)
+    if not _VALID_NAME.match(name):
+        raise ValueError(f"'call' function name must be a valid identifier, got '{name}'")
+
+    call_args: List[Expr] = []
+    while tokens and tokens[0] != ')':
+        call_args.append(_parse_tokens(tokens, args))
+    if not tokens or tokens[0] != ')':
+        raise ValueError(f"Missing ')' for '(call {name} ...)'")
+    tokens.pop(0)   # consume ')'
+
+    return Call(name, tuple(call_args))
 
 
 def _parse_while(tokens: List[str], args: Dict[str, int]) -> Expr:

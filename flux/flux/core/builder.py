@@ -12,7 +12,8 @@ class FunctionBuilder:
         self.name           = name
         self._counter       = 0
         self._label_counter = 0
-        self._n_vars        = 0   # number of mutable variable slots allocated
+        self._n_vars        = 0
+        self._has_calls     = False
         self._params:  List[VReg]       = []
         self._blocks:  List[BasicBlock] = []
         self._current: BasicBlock       = self._new_block("entry")
@@ -185,9 +186,23 @@ class FunctionBuilder:
         """Emit  [rbp + var.offset] = value  (mutable variable write)."""
         self._emit(Instr(Opcode.STORE_VAR, None, [var, value]))
 
+    def call(self, ptr_holder_addr: int, *args: VReg) -> VReg:
+        """Emit an indirect function call through a pointer holder.
+
+        ptr_holder_addr — address of a ctypes.c_uint64 holding the
+                          function pointer (stable before compilation).
+        args            — VRegs to pass as arguments.
+        """
+        result = self._fresh()
+        self._has_calls = True
+        self._emit(Instr(Opcode.CALL, result,
+                         [Imm(ptr_holder_addr)] + list(args)))
+        return result
+
     # ------------------------------------------------------------------
     # Finalise
     # ------------------------------------------------------------------
 
     def build(self) -> Function:
-        return Function(self.name, self._params, self._blocks, self._n_vars)
+        return Function(self.name, self._params, self._blocks,
+                        self._n_vars, self._has_calls)

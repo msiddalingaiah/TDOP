@@ -52,6 +52,7 @@ class Opcode(Enum):
     SHR       = auto()   # result = lhs >> rhs (arithmetic right shift)
     LOAD_VAR  = auto()   # result = [rbp + var.offset]  (mutable variable read)
     STORE_VAR = auto()   # [rbp + var.offset] = value   (mutable variable write, no result)
+    CALL      = auto()   # result = call through pointer holder: [Imm(ptr_addr), arg0, ...]
     CMP       = auto()   # compare lhs with rhs  (no result, sets flags)
     JGE       = auto()   # jump if ≥  (after cmp)
     JLE       = auto()   # jump if ≤  (after cmp)
@@ -120,10 +121,11 @@ class BasicBlock:
 @dataclass
 class Function:
     """A named function: a parameter list and an ordered list of blocks."""
-    name:   str
-    params: List[VReg]
-    blocks: List[BasicBlock]
-    n_vars: int = 0   # number of mutable variable stack slots
+    name:      str
+    params:    List[VReg]
+    blocks:    List[BasicBlock]
+    n_vars:    int  = 0      # number of mutable variable stack slots
+    has_calls: bool = False  # True if this function calls other functions
 
     def __repr__(self) -> str:
         params = ", ".join(repr(p) for p in self.params)

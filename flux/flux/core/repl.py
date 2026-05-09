@@ -4,6 +4,7 @@ import sys
 
 from flux.core.parser   import _tokenize
 from flux.core.compiler import compile_and_run, compile_expr
+from flux.core.registry import FunctionRegistry
 
 
 BANNER = """\
@@ -21,6 +22,8 @@ HELP = """
   (< a b)                    comparison  ( <  >  = )
   (if (< x 0) (* x -1) x)   conditional
   (var x 0 (set! x 42) x)   mutable variable
+  (defun sq (x) (* x x))   define a function
+  (call sq 7)              call a function
   _                          last result
 
   Bindings
@@ -45,7 +48,8 @@ class FluxRepl:
 
     def __init__(self) -> None:
         self.bindings: dict[str, int] = {}
-        self._last_fn = None
+        self._last_fn  = None
+        self.registry  = FunctionRegistry()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -139,7 +143,7 @@ class FluxRepl:
 
         try:
             used         = self._used_bindings(value_str)
-            fn, code     = compile_expr(value_str, **used)
+            fn, code     = compile_expr(value_str, registry=self.registry, **used)
             result       = self._execute(code, used)
         except Exception as e:
             print(f"Error: {e}")
@@ -172,7 +176,7 @@ class FluxRepl:
     def _run_expr(self, expr_str: str) -> None:
         try:
             used         = self._used_bindings(expr_str)
-            fn, code     = compile_expr(expr_str, **used)
+            fn, code     = compile_expr(expr_str, registry=self.registry, **used)
         except Exception as e:
             print(f"Error: {e}")
             return

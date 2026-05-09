@@ -246,7 +246,8 @@ Bye.
 | `(var x init body ...)` | mutable variable |
 | `(set! x expr)` | assign to mutable variable, returns new value |
 | `(begin e1 e2)` | sequence two expressions, return second |
-| `(while cond body ...)` | loop while condition holds |
+| `(defun name (params) body ...)` | define a named function |
+| `(call name arg ...)` | call a named function |
 
 Operands can be integer literals, bound variable names, or nested expressions.
 `_` always holds the result of the last evaluation.
@@ -405,8 +406,21 @@ automatically from `sys.platform` at runtime.
 | Component | Status |
 |---|---|
 | x86-64 emitter | ✅ mov, add, sub, imul, push, pop, cmp, jge, jle, jne, jmp, ret, spill/var load/store |
-| Tree IR | ✅ Const, Arg, Add, Sub, Mul, Div, Mod, And, Or, Xor, Shl, Shr, Lt, Gt, Eq, If, Let, Var, MutVar, SetBang, Begin, While |
-| BURG selector | ✅ optimal tiling, imm/reg non-terminals, all operators (rules 1–28) |
+| Tree IR | ✅ Const, Arg, Add, Sub, Mul, Div, Mod, And, Or, Xor, Shl, Shr, Lt, Gt, Eq, If, Let, Var, MutVar, SetBang, Begin, While, Call, Defun |
+| BURG selector | ✅ optimal tiling, all operators, control flow, functions (rules 1–30) |
+| Linear IR | ✅ flat instruction list with labels, branches, VRegs, LOAD/STORE_VAR, CALL |
+| SSA construction | ✅ CFG splitting, RPO, dominators (Cooper 2001), phi insertion, renaming |
+| SSA destruction | ✅ phi → parallel copies, sequentialisation, flat IR reconstruction |
+| Trivial allocator | ✅ first-seen order, no spilling |
+| Linear scan allocator | ✅ live intervals, register reuse, stack spilling, caller-save around calls |
+| Stack frame | ✅ prologue/epilogue, mutable var slots, spill slots, stack-passed args, 16-byte alignment |
+| Function registry | ✅ pointer holders, indirect calls, recursion, mutual recursion, unlimited arguments |
+| S-expression parser | ✅ all operators, if, let, var, set!, begin, while, defun, call |
+| REPL | ✅ def, :ir, :vars, :clear, defun/call via expression |
+| Windows support | ✅ VirtualAlloc, Microsoft x64 ABI |
+| Linux support | ✅ mmap, System V AMD64 ABI |
+| SSA optimisations | ❌ DCE, constant propagation, GVN — not yet |
+| ARM64 target | ❌ not yet |
 | Linear IR | ✅ flat instruction list with labels, branches, VRegs, LOAD_VAR, STORE_VAR |
 | SSA construction | ✅ CFG splitting, RPO, dominators (Cooper 2001), phi insertion, renaming |
 | SSA destruction | ✅ phi → parallel copies, sequentialisation, flat IR reconstruction |
@@ -430,7 +444,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-318 tests across 16 test modules, covering encoding, execution, live
+351 tests across 17 test modules, covering encoding, execution, live
 interval computation, register reuse, spilling, mutable variable stack
 slots, loop back-edge liveness, BURG rule selection, let and var binding
 semantics, SSA construction and destruction, and end-to-end pipeline

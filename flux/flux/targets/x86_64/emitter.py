@@ -307,38 +307,84 @@ class X86_64Emitter(Emitter):
         else:
             raise NotImplementedError(f"shr {type(dst).__name__}, {type(count).__name__}")
 
-    def emit_prologue(self, frame_size: int) -> None:
-        """Emit function prologue: save registers, set up frame, allocate spills.
+    def load_indirect(self, dst: Operand, src: Operand) -> None:
+        """Emit  mov dst, [src]  (64-bit load from register-addressed memory)."""
+        assert isinstance(dst, X86_64Reg) and isinstance(src, X86_64Reg)
+        # MOV r64, r/m64 (8B /r), mod=00 (register-indirect)
+        # rm low bits must not be 4 (RSP/R12→SIB) or 5 (RBP/R13→disp32).
+        # R14 index & 7 = 6 — safe.
+        rex   = self._rex(w=True, r=dst.extended, b=src.extended)
+        modrm = self._modrm(0b00, dst.index, src.index)
+        self._emit(rex, 0x8B, modrm)
 
-        Stack layout after prologue:
-            [rbp + 0]   saved rbp
-            [rbp - 8]   spill slot 0
-            [rbp - 16]  spill slot 1  ...
-        Scratch registers (r14, r15) are saved via push before rbp is set.
+    def call_ptr(self, ptr_holder_addr: int) -> None:
+        """Call a function through its pointer holder.
+
+        Sequence:
+            mov r14, ptr_holder_addr  ; load address of holder (imm64)
+            mov r14, [r14]            ; dereference: load the function pointer
+            call r14                  ; indirect call
         """
-        # push rbp / push r14 / push r15
+        # mov r14, ptr_holder_addr — REX.W + REX.B + (B8 + r14&7) + imm64
+        self._emit(self._rex(w=True, b=True), 0xB8 | (regs.R14.index & 7))
+        self._buf.extend(struct.pack('<q', ptr_holder_addr))
+        # mov r14, [r14] — REX.W + REX.R + REX.B + 8B + ModRM(00, r14&7, r14&7)
+        # r14 & 7 = 6 — no SIB or disp needed
+        self._emit(0x4D, 0x8B, 0x36)
+        # call r14 — REX.B + FF /2 + ModRM(11, 2, r14&7)
+        self._emit(0x41, 0xFF, 0xD6)
+
+    def emit_prologue(self, frame_size: int, extra_saves=None) -> None:
+        """Emit function prologue.
+
+        Push order: RBP, extra_saves..., R14, R15
+        Then: mov rbp, rsp
+        Then: sub rsp, adjusted_frame  (adjusted for alignment)
+
+        Stack alignment: at function entry RSP = 16k-8 (call pushed 8 bytes).
+        After P pushes: RSP = 16k - 8 - 8P.
+        For RSP to be 16-aligned after prologue: P must be odd.
+        If P is even, allocate 8 extra bytes in the frame.
+        """
+        saves = list(extra_saves or [])
+        total_pushes = 3 + len(saves)   # rbp + saves + r14 + r15
+
         self.push(regs.RBP)
+        for r in saves:
+            self.push(r)
         self.push(regs.R14)
         self.push(regs.R15)
-        # mov rbp, rsp — REX.W + 89 /r  (stores rsp into rbp)
-        # ModRM: mod=11, reg=RSP(4), rm=RBP(5) = 0xE5
+        # mov rbp, rsp
         self._emit(0x48, 0x89, 0xE5)
-        # sub rsp, frame_size
-        if frame_size > 0:
-            if frame_size <= 127:
-                self._emit(0x48, 0x83, 0xEC, frame_size)
+
+        # Compute frame allocation, adjusting for alignment if needed.
+        # After pushes, RBP = 16k - 8*(total_pushes+1).
+        # For sub rsp, N to leave RSP 16-aligned: need N ≡ 0 mod 16 when
+        # total_pushes is odd, or N ≡ 8 mod 16 when total_pushes is even.
+        if total_pushes % 2 == 1:
+            adjusted = (frame_size + 15) & ~15
+        else:
+            # Bump so that adjusted ≡ 8 mod 16 and adjusted >= frame_size
+            adjusted = ((frame_size + 8 + 15) & ~15) - 8
+            if adjusted < 8:
+                adjusted = 8
+
+        if adjusted > 0:
+            if adjusted <= 127:
+                self._emit(0x48, 0x83, 0xEC, adjusted)
             else:
                 self._emit(0x48, 0x81, 0xEC)
-                self._buf.extend(struct.pack('<I', frame_size))
+                self._buf.extend(struct.pack('<I', adjusted))
 
-    def emit_epilogue(self) -> None:
-        """Emit function epilogue: restore registers, return."""
-        # mov rsp, rbp — REX.W + 89 /r  (stores rbp into rsp)
-        # ModRM: mod=11, reg=RBP(5), rm=RSP(4) = 0xEC
+    def emit_epilogue(self, extra_saves=None) -> None:
+        """Emit function epilogue: restore registers and return."""
+        saves = list(extra_saves or [])
+        # mov rsp, rbp
         self._emit(0x48, 0x89, 0xEC)
-        # pop r15 / pop r14 / pop rbp
         self.pop(regs.R15)
         self.pop(regs.R14)
+        for r in reversed(saves):
+            self.pop(r)
         self.pop(regs.RBP)
         self.ret()
 
