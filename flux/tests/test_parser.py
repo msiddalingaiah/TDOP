@@ -57,7 +57,7 @@ class TestParser:
 
     def test_unknown_operator_raises(self):
         with pytest.raises(ValueError, match="Unknown operator"):
-            parse_expr("(/ 4 2)")
+            parse_expr("(@ 4 2)")
 
     def test_unknown_symbol_raises(self):
         # An invalid token (not a number, operator, or valid identifier) raises.

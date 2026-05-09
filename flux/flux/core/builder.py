@@ -95,6 +95,48 @@ class FunctionBuilder:
         self._emit(Instr(Opcode.MUL, result, [lhs, rhs]))
         return result
 
+    def div(self, lhs: VReg, rhs: VReg) -> VReg:
+        """Emit  result = lhs // rhs  (signed integer division)."""
+        result = self._fresh()
+        self._emit(Instr(Opcode.DIV, result, [lhs, rhs]))
+        return result
+
+    def mod(self, lhs: VReg, rhs: VReg) -> VReg:
+        """Emit  result = lhs % rhs  (signed integer remainder)."""
+        result = self._fresh()
+        self._emit(Instr(Opcode.MOD, result, [lhs, rhs]))
+        return result
+
+    def band(self, lhs: VReg, rhs: Union[VReg, Imm]) -> VReg:
+        """Emit  result = lhs & rhs  (bitwise AND)."""
+        result = self._fresh()
+        self._emit(Instr(Opcode.BAND, result, [lhs, rhs]))
+        return result
+
+    def bor(self, lhs: VReg, rhs: Union[VReg, Imm]) -> VReg:
+        """Emit  result = lhs | rhs  (bitwise OR)."""
+        result = self._fresh()
+        self._emit(Instr(Opcode.BOR, result, [lhs, rhs]))
+        return result
+
+    def bxor(self, lhs: VReg, rhs: Union[VReg, Imm]) -> VReg:
+        """Emit  result = lhs ^ rhs  (bitwise XOR)."""
+        result = self._fresh()
+        self._emit(Instr(Opcode.BXOR, result, [lhs, rhs]))
+        return result
+
+    def shl(self, lhs: VReg, rhs: Union[VReg, Imm]) -> VReg:
+        """Emit  result = lhs << rhs  (left shift)."""
+        result = self._fresh()
+        self._emit(Instr(Opcode.SHL, result, [lhs, rhs]))
+        return result
+
+    def shr(self, lhs: VReg, rhs: Union[VReg, Imm]) -> VReg:
+        """Emit  result = lhs >> rhs  (arithmetic right shift)."""
+        result = self._fresh()
+        self._emit(Instr(Opcode.SHR, result, [lhs, rhs]))
+        return result
+
     # ------------------------------------------------------------------
     # Comparison and control flow
     # ------------------------------------------------------------------

@@ -6,7 +6,8 @@ from typing import Dict, List, Union
 from flux.core.operands import Imm
 from flux.core.ir       import VReg
 from flux.core.builder  import FunctionBuilder
-from flux.core.tree     import (Expr, Const, Arg, Add, Sub, Mul,
+from flux.core.tree     import (Expr, Const, Arg, Add, Sub, Mul, Div, Mod,
+                                And, Or, Xor, Shl, Shr,
                                 Lt, Gt, Eq, If, Let, Var,
                                 MutVar, SetBang, Begin, While)
 
@@ -94,6 +95,18 @@ class BurgSelector:
     14  SetBang(name, reg)    reg   1    store value to mutable var, return value
     15  Begin(reg, reg)       reg   0    evaluate first (side effects), return second
     16  While(cond, reg)      reg   2    loop: label, cmp, branch, body, jmp-back
+    17  Div(reg, reg)         reg   3    signed integer division (idiv)
+    18  Mod(reg, reg)         reg   3    signed integer remainder (idiv)
+    19  And(reg, reg)         reg   1    bitwise AND
+    20  And(reg, imm)         reg   1    bitwise AND with immediate
+    21  Or(reg, reg)          reg   1    bitwise OR
+    22  Or(reg, imm)          reg   1    bitwise OR with immediate
+    23  Xor(reg, reg)         reg   1    bitwise XOR
+    24  Xor(reg, imm)         reg   1    bitwise XOR with immediate
+    25  Shl(reg, reg)         reg   2    left shift (count in CL)
+    26  Shl(reg, imm)         reg   1    left shift by immediate
+    27  Shr(reg, reg)         reg   2    arithmetic right shift (count in CL)
+    28  Shr(reg, imm)         reg   1    arithmetic right shift by immediate
     """
 
     def __init__(self, params: List[VReg], builder: FunctionBuilder) -> None:
@@ -221,6 +234,43 @@ class BurgSelector:
                 bc  = self._label(b)[NT.REG].cost
                 c16 = lc + rc + bc + 2
                 state = _better(state, NT.REG, c16, 16)
+
+            case Div(left=l, right=r):
+                # rule 17: Div(reg, reg) — no immediate form (idiv has none)
+                lc  = self._label(l)[NT.REG].cost
+                rc  = self._label(r)[NT.REG].cost
+                state = _better(state, NT.REG, lc + rc + 3, 17)
+
+            case Mod(left=l, right=r):
+                # rule 18: Mod(reg, reg)
+                lc  = self._label(l)[NT.REG].cost
+                rc  = self._label(r)[NT.REG].cost
+                state = _better(state, NT.REG, lc + rc + 3, 18)
+
+            case And(left=l, right=r):
+                lc, rs = self._label(l)[NT.REG].cost, self._label(r)
+                state = _better(state, NT.REG, lc + rs[NT.REG].cost + 1, 19)
+                state = _better(state, NT.REG, lc + rs[NT.IMM].cost + 1, 20)
+
+            case Or(left=l, right=r):
+                lc, rs = self._label(l)[NT.REG].cost, self._label(r)
+                state = _better(state, NT.REG, lc + rs[NT.REG].cost + 1, 21)
+                state = _better(state, NT.REG, lc + rs[NT.IMM].cost + 1, 22)
+
+            case Xor(left=l, right=r):
+                lc, rs = self._label(l)[NT.REG].cost, self._label(r)
+                state = _better(state, NT.REG, lc + rs[NT.REG].cost + 1, 23)
+                state = _better(state, NT.REG, lc + rs[NT.IMM].cost + 1, 24)
+
+            case Shl(left=l, right=r):
+                lc, rs = self._label(l)[NT.REG].cost, self._label(r)
+                state = _better(state, NT.REG, lc + rs[NT.REG].cost + 2, 25)
+                state = _better(state, NT.REG, lc + rs[NT.IMM].cost + 1, 26)
+
+            case Shr(left=l, right=r):
+                lc, rs = self._label(l)[NT.REG].cost, self._label(r)
+                state = _better(state, NT.REG, lc + rs[NT.REG].cost + 2, 27)
+                state = _better(state, NT.REG, lc + rs[NT.IMM].cost + 1, 28)
 
         self._cache[key] = state
         return state
@@ -449,6 +499,71 @@ class BurgSelector:
 
                 # While returns 0 (the result is usually discarded).
                 return self.builder.load_imm(0)
+
+            case 17:  # Div(reg, reg) → reg
+                assert isinstance(node, Div)
+                lhs = self._reduce(node.left,  NT.REG)
+                rhs = self._reduce(node.right, NT.REG)
+                assert isinstance(lhs, VReg) and isinstance(rhs, VReg)
+                return self.builder.div(lhs, rhs)
+
+            case 18:  # Mod(reg, reg) → reg
+                assert isinstance(node, Mod)
+                lhs = self._reduce(node.left,  NT.REG)
+                rhs = self._reduce(node.right, NT.REG)
+                assert isinstance(lhs, VReg) and isinstance(rhs, VReg)
+                return self.builder.mod(lhs, rhs)
+
+            case 19:  # And(reg, reg)
+                assert isinstance(node, And)
+                lhs = self._reduce(node.left, NT.REG)
+                rhs = self._reduce(node.right, NT.REG)
+                return self.builder.band(lhs, rhs)
+            case 20:  # And(reg, imm)
+                assert isinstance(node, And)
+                lhs = self._reduce(node.left, NT.REG)
+                rhs = self._reduce(node.right, NT.IMM)
+                return self.builder.band(lhs, rhs)
+            case 21:  # Or(reg, reg)
+                assert isinstance(node, Or)
+                lhs = self._reduce(node.left, NT.REG)
+                rhs = self._reduce(node.right, NT.REG)
+                return self.builder.bor(lhs, rhs)
+            case 22:  # Or(reg, imm)
+                assert isinstance(node, Or)
+                lhs = self._reduce(node.left, NT.REG)
+                rhs = self._reduce(node.right, NT.IMM)
+                return self.builder.bor(lhs, rhs)
+            case 23:  # Xor(reg, reg)
+                assert isinstance(node, Xor)
+                lhs = self._reduce(node.left, NT.REG)
+                rhs = self._reduce(node.right, NT.REG)
+                return self.builder.bxor(lhs, rhs)
+            case 24:  # Xor(reg, imm)
+                assert isinstance(node, Xor)
+                lhs = self._reduce(node.left, NT.REG)
+                rhs = self._reduce(node.right, NT.IMM)
+                return self.builder.bxor(lhs, rhs)
+            case 25:  # Shl(reg, reg)
+                assert isinstance(node, Shl)
+                lhs = self._reduce(node.left, NT.REG)
+                rhs = self._reduce(node.right, NT.REG)
+                return self.builder.shl(lhs, rhs)
+            case 26:  # Shl(reg, imm)
+                assert isinstance(node, Shl)
+                lhs = self._reduce(node.left, NT.REG)
+                rhs = self._reduce(node.right, NT.IMM)
+                return self.builder.shl(lhs, rhs)
+            case 27:  # Shr(reg, reg)
+                assert isinstance(node, Shr)
+                lhs = self._reduce(node.left, NT.REG)
+                rhs = self._reduce(node.right, NT.REG)
+                return self.builder.shr(lhs, rhs)
+            case 28:  # Shr(reg, imm)
+                assert isinstance(node, Shr)
+                lhs = self._reduce(node.left, NT.REG)
+                rhs = self._reduce(node.right, NT.IMM)
+                return self.builder.shr(lhs, rhs)
 
             case _:
                 raise RuntimeError(f"Unknown rule id {entry.rule_id}")

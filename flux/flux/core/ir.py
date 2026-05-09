@@ -43,6 +43,13 @@ class Opcode(Enum):
     ADD       = auto()   # result = lhs + rhs
     SUB       = auto()   # result = lhs - rhs
     MUL       = auto()   # result = lhs * rhs
+    DIV       = auto()   # result = lhs / rhs  (signed integer division)
+    MOD       = auto()   # result = lhs % rhs  (signed remainder)
+    BAND      = auto()   # result = lhs & rhs  (bitwise AND)
+    BOR       = auto()   # result = lhs | rhs  (bitwise OR)
+    BXOR      = auto()   # result = lhs ^ rhs  (bitwise XOR)
+    SHL       = auto()   # result = lhs << rhs (left shift)
+    SHR       = auto()   # result = lhs >> rhs (arithmetic right shift)
     LOAD_VAR  = auto()   # result = [rbp + var.offset]  (mutable variable read)
     STORE_VAR = auto()   # [rbp + var.offset] = value   (mutable variable write, no result)
     CMP       = auto()   # compare lhs with rhs  (no result, sets flags)

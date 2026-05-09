@@ -2,7 +2,10 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional
 
-from flux.core.tree import Expr, Const, Arg, Add, Sub, Mul, Lt, Gt, Eq, If, Let, Var, MutVar, SetBang, Begin, While
+from flux.core.tree import (Expr, Const, Arg, Add, Sub, Mul, Div, Mod,
+                            And, Or, Xor, Shl, Shr,
+                            Lt, Gt, Eq, If, Let, Var,
+                            MutVar, SetBang, Begin, While)
 
 
 _VALID_NAME = re.compile(r'^[a-zA-Z_]\w*$')
@@ -101,13 +104,20 @@ def _parse_tokens(tokens: List[str], args: Dict[str, int]) -> Expr:
             )
 
         match op:
-            case '+': return Add(operands[0], operands[1])
-            case '-': return Sub(operands[0], operands[1])
-            case '*': return Mul(operands[0], operands[1])
-            case '<': return Lt(operands[0], operands[1])
-            case '>': return Gt(operands[0], operands[1])
-            case '=': return Eq(operands[0], operands[1])
-            case _:   raise ValueError(f"Unknown operator: '{op}'")
+            case '+':  return Add(operands[0], operands[1])
+            case '-':  return Sub(operands[0], operands[1])
+            case '*':  return Mul(operands[0], operands[1])
+            case '/':  return Div(operands[0], operands[1])
+            case '%':  return Mod(operands[0], operands[1])
+            case '&':  return And(operands[0], operands[1])
+            case '|':  return Or (operands[0], operands[1])
+            case '^':  return Xor(operands[0], operands[1])
+            case '<<': return Shl(operands[0], operands[1])
+            case '>>': return Shr(operands[0], operands[1])
+            case '<':  return Lt (operands[0], operands[1])
+            case '>':  return Gt (operands[0], operands[1])
+            case '=':  return Eq (operands[0], operands[1])
+            case _:    raise ValueError(f"Unknown operator: '{op}'")
 
     elif token == ')':
         raise ValueError("Unexpected ')'")

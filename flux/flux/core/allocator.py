@@ -105,6 +105,48 @@ class Allocator(ABC):
             case Opcode.LABEL:
                 emitter.place_label(instr.operands[0].id)
 
+            case Opcode.BAND:
+                dst, lhs = reg(instr.result), reg(instr.operands[0])
+                rhs = resolve(instr.operands[1])
+                if dst != lhs: emitter.mov(dst, lhs)
+                emitter.band(dst, rhs)
+
+            case Opcode.BOR:
+                dst, lhs = reg(instr.result), reg(instr.operands[0])
+                rhs = resolve(instr.operands[1])
+                if dst != lhs: emitter.mov(dst, lhs)
+                emitter.bor(dst, rhs)
+
+            case Opcode.BXOR:
+                dst, lhs = reg(instr.result), reg(instr.operands[0])
+                rhs = resolve(instr.operands[1])
+                if dst != lhs: emitter.mov(dst, lhs)
+                emitter.bxor(dst, rhs)
+
+            case Opcode.SHL:
+                dst, lhs = reg(instr.result), reg(instr.operands[0])
+                rhs = resolve(instr.operands[1])
+                if dst != lhs: emitter.mov(dst, lhs)
+                emitter.shl(dst, rhs)
+
+            case Opcode.SHR:
+                dst, lhs = reg(instr.result), reg(instr.operands[0])
+                rhs = resolve(instr.operands[1])
+                if dst != lhs: emitter.mov(dst, lhs)
+                emitter.shr(dst, rhs)
+
+            case Opcode.DIV:
+                dst = reg(instr.result)
+                lhs = reg(instr.operands[0])
+                rhs = reg(instr.operands[1])
+                emitter.div(dst, lhs, rhs)
+
+            case Opcode.MOD:
+                dst = reg(instr.result)
+                lhs = reg(instr.operands[0])
+                rhs = reg(instr.operands[1])
+                emitter.mod(dst, lhs, rhs)
+
             case Opcode.MUL:
                 dst = reg(instr.result)
                 lhs = reg(instr.operands[0])

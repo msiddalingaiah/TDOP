@@ -231,6 +231,13 @@ Bye.
 | `(+ a b)` | addition |
 | `(- a b)` | subtraction |
 | `(* a b)` | multiplication |
+| `(/ a b)` | integer division (truncates toward zero) |
+| `(% a b)` | integer remainder |
+| `(& a b)` | bitwise AND |
+| `(\| a b)` | bitwise OR |
+| `(^ a b)` | bitwise XOR |
+| `(<< a n)` | left shift |
+| `(>> a n)` | arithmetic right shift (sign-extending) |
 | `(< a b)` | less-than comparison |
 | `(> a b)` | greater-than comparison |
 | `(= a b)` | equality comparison |
@@ -398,15 +405,15 @@ automatically from `sys.platform` at runtime.
 | Component | Status |
 |---|---|
 | x86-64 emitter | ✅ mov, add, sub, imul, push, pop, cmp, jge, jle, jne, jmp, ret, spill/var load/store |
-| Tree IR | ✅ Const, Arg, Add, Sub, Mul, Lt, Gt, Eq, If, Let, Var, MutVar, SetBang, Begin, While |
-| BURG selector | ✅ optimal tiling, imm/reg non-terminals, all control flow (rules 1–16) |
+| Tree IR | ✅ Const, Arg, Add, Sub, Mul, Div, Mod, And, Or, Xor, Shl, Shr, Lt, Gt, Eq, If, Let, Var, MutVar, SetBang, Begin, While |
+| BURG selector | ✅ optimal tiling, imm/reg non-terminals, all operators (rules 1–28) |
 | Linear IR | ✅ flat instruction list with labels, branches, VRegs, LOAD_VAR, STORE_VAR |
 | SSA construction | ✅ CFG splitting, RPO, dominators (Cooper 2001), phi insertion, renaming |
 | SSA destruction | ✅ phi → parallel copies, sequentialisation, flat IR reconstruction |
 | Trivial allocator | ✅ first-seen order, no spilling |
 | Linear scan allocator | ✅ live intervals, register reuse, stack spilling |
 | Stack frame | ✅ prologue/epilogue, mutable var slots, spill slots, 16-byte alignment |
-| S-expression parser | ✅ +, -, *, <, >, =, if, let, var, set!, begin, integer literals, named args |
+| S-expression parser | ✅ +, -, *, /, %, &, \|, ^, <<, >>, <, >, =, if, let, var, set!, begin, while |
 | REPL | ✅ def, :ir, :vars, :clear |
 | Windows support | ✅ VirtualAlloc, Microsoft x64 ABI |
 | Linux support | ✅ mmap, System V AMD64 ABI |
@@ -423,7 +430,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-267 tests across 14 test modules, covering encoding, execution, live
+318 tests across 16 test modules, covering encoding, execution, live
 interval computation, register reuse, spilling, mutable variable stack
 slots, loop back-edge liveness, BURG rule selection, let and var binding
 semantics, SSA construction and destruction, and end-to-end pipeline

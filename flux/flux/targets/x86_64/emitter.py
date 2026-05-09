@@ -91,6 +91,64 @@ class X86_64Emitter(Emitter):
             raise NotImplementedError(
                 f"mul {type(dst).__name__}, {type(src).__name__}")
 
+    def div(self, dst: Operand, lhs: Operand, rhs: Operand) -> None:
+        """Emit signed integer division: dst = lhs // rhs.
+
+        Uses the IDIV instruction which divides RDX:RAX by the operand.
+        If the divisor (rhs) is in RAX or RDX (which are clobbered by the
+        division setup), saves it to R14 first.
+        """
+        self._idiv(dst, lhs, rhs, is_mod=False)
+
+    def mod(self, dst: Operand, lhs: Operand, rhs: Operand) -> None:
+        """Emit signed integer remainder: dst = lhs % rhs."""
+        self._idiv(dst, lhs, rhs, is_mod=True)
+
+    def _idiv(self, dst: Operand, lhs: Operand, rhs: Operand,
+              is_mod: bool) -> None:
+        assert isinstance(dst, X86_64Reg)
+        assert isinstance(lhs, X86_64Reg)
+        assert isinstance(rhs, X86_64Reg)
+
+        # If divisor is in RAX or RDX (both clobbered by the div sequence),
+        # save it to R14 (scratch, not in allocatable pool) first.
+        if rhs == regs.RAX or rhs == regs.RDX:
+            self.mov(regs.R14, rhs)
+            divisor = regs.R14
+        else:
+            divisor = rhs
+
+        # CQO will sign-extend RAX into RDX:RAX, clobbering any live value
+        # in RDX.  Push RDX before the sequence and pop it after — unless
+        # the result goes to RDX (MOD with dst==RDX, or DIV with dst==RDX),
+        # in which case we want the new RDX value.
+        should_restore = (dst != regs.RDX)
+        if should_restore:
+            self.push(regs.RDX)
+
+        # Load dividend into RAX.
+        if lhs != regs.RAX:
+            self.mov(regs.RAX, lhs)
+
+        # CQO: sign-extend RAX → RDX:RAX
+        self._emit(0x48, 0x99)
+
+        # IDIV divisor  (REX.W + F7 /7)
+        rex   = self._rex(w=True, b=divisor.extended)
+        modrm = self._modrm(0b11, 7, divisor.index)
+        self._emit(rex, 0xF7, modrm)
+
+        # Copy result to destination:
+        #   quotient  → RAX  (is_mod=False)
+        #   remainder → RDX  (is_mod=True)
+        source = regs.RDX if is_mod else regs.RAX
+        if dst != source:
+            self.mov(dst, source)
+
+        # Restore RDX if we saved it.
+        if should_restore:
+            self.pop(regs.RDX)
+
     def sub(self, dst: Operand, src: Operand) -> None:
         if isinstance(dst, X86_64Reg) and isinstance(src, X86_64Reg):
             # SUB r/m64, r64 — REX.W + 29 /r
@@ -168,6 +226,86 @@ class X86_64Emitter(Emitter):
 
     def place_label(self, label_id: int) -> None:
         self._resolve_label(label_id)
+
+    def band(self, dst: Operand, src: Operand) -> None:
+        if isinstance(dst, X86_64Reg) and isinstance(src, X86_64Reg):
+            # AND r/m64, r64 — REX.W + 21 /r
+            self._emit(self._rex(w=True, r=src.extended, b=dst.extended),
+                       0x21, self._modrm(0b11, src.index, dst.index))
+        elif isinstance(dst, X86_64Reg) and isinstance(src, Imm):
+            # AND r/m64, imm32 — REX.W + 81 /4 + imm32
+            self._emit(self._rex(w=True, b=dst.extended),
+                       0x81, self._modrm(0b11, 4, dst.index))
+            self._buf.extend(struct.pack('<i', src.value))
+        else:
+            raise NotImplementedError(f"band {type(dst).__name__}, {type(src).__name__}")
+
+    def bor(self, dst: Operand, src: Operand) -> None:
+        if isinstance(dst, X86_64Reg) and isinstance(src, X86_64Reg):
+            # OR r/m64, r64 — REX.W + 09 /r
+            self._emit(self._rex(w=True, r=src.extended, b=dst.extended),
+                       0x09, self._modrm(0b11, src.index, dst.index))
+        elif isinstance(dst, X86_64Reg) and isinstance(src, Imm):
+            # OR r/m64, imm32 — REX.W + 81 /1 + imm32
+            self._emit(self._rex(w=True, b=dst.extended),
+                       0x81, self._modrm(0b11, 1, dst.index))
+            self._buf.extend(struct.pack('<i', src.value))
+        else:
+            raise NotImplementedError(f"bor {type(dst).__name__}, {type(src).__name__}")
+
+    def bxor(self, dst: Operand, src: Operand) -> None:
+        if isinstance(dst, X86_64Reg) and isinstance(src, X86_64Reg):
+            # XOR r/m64, r64 — REX.W + 31 /r
+            self._emit(self._rex(w=True, r=src.extended, b=dst.extended),
+                       0x31, self._modrm(0b11, src.index, dst.index))
+        elif isinstance(dst, X86_64Reg) and isinstance(src, Imm):
+            # XOR r/m64, imm32 — REX.W + 81 /6 + imm32
+            self._emit(self._rex(w=True, b=dst.extended),
+                       0x81, self._modrm(0b11, 6, dst.index))
+            self._buf.extend(struct.pack('<i', src.value))
+        else:
+            raise NotImplementedError(f"bxor {type(dst).__name__}, {type(src).__name__}")
+
+    def shl(self, dst: Operand, count: Operand) -> None:
+        assert isinstance(dst, X86_64Reg)
+        if isinstance(count, Imm):
+            # SHL r/m64, imm8 — REX.W + C1 /4 + imm8
+            self._emit(self._rex(w=True, b=dst.extended),
+                       0xC1, self._modrm(0b11, 4, dst.index),
+                       count.value & 0x3F)
+        elif isinstance(count, X86_64Reg):
+            # SHL r/m64, CL — REX.W + D3 /4
+            # Count must be in CL; if it isn't, save RCX and move count there.
+            need_save = (count != regs.RCX)
+            if need_save:
+                self.mov(regs.R14, regs.RCX)
+                self.mov(regs.RCX, count)
+            self._emit(self._rex(w=True, b=dst.extended),
+                       0xD3, self._modrm(0b11, 4, dst.index))
+            if need_save:
+                self.mov(regs.RCX, regs.R14)
+        else:
+            raise NotImplementedError(f"shl {type(dst).__name__}, {type(count).__name__}")
+
+    def shr(self, dst: Operand, count: Operand) -> None:
+        assert isinstance(dst, X86_64Reg)
+        if isinstance(count, Imm):
+            # SAR r/m64, imm8 — REX.W + C1 /7 + imm8
+            self._emit(self._rex(w=True, b=dst.extended),
+                       0xC1, self._modrm(0b11, 7, dst.index),
+                       count.value & 0x3F)
+        elif isinstance(count, X86_64Reg):
+            # SAR r/m64, CL — REX.W + D3 /7
+            need_save = (count != regs.RCX)
+            if need_save:
+                self.mov(regs.R14, regs.RCX)
+                self.mov(regs.RCX, count)
+            self._emit(self._rex(w=True, b=dst.extended),
+                       0xD3, self._modrm(0b11, 7, dst.index))
+            if need_save:
+                self.mov(regs.RCX, regs.R14)
+        else:
+            raise NotImplementedError(f"shr {type(dst).__name__}, {type(count).__name__}")
 
     def emit_prologue(self, frame_size: int) -> None:
         """Emit function prologue: save registers, set up frame, allocate spills.

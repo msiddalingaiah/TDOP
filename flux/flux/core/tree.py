@@ -140,3 +140,52 @@ class While(Expr):
     """
     cond: Expr
     body: Expr
+
+
+@dataclass(frozen=True)
+class Div(Expr):
+    """Integer division: left // right."""
+    left:  Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class Mod(Expr):
+    """Integer modulo: left % right."""
+    left:  Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class And(Expr):
+    """Bitwise AND: left & right."""
+    left:  Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class Or(Expr):
+    """Bitwise OR: left | right."""
+    left:  Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class Xor(Expr):
+    """Bitwise XOR: left ^ right."""
+    left:  Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class Shl(Expr):
+    """Left shift: left << right."""
+    left:  Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class Shr(Expr):
+    """Arithmetic right shift: left >> right (sign-extending)."""
+    left:  Expr
+    right: Expr
