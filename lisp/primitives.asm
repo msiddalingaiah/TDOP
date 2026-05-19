@@ -39,6 +39,12 @@ section '.rdata' data readable
     _pn_nl     db 'newline', 0
     _pn_exit   db 'exit',    0
     _pn_quit   db 'quit',    0
+    _pn_count  db 'count',   0
+    _pn_nth    db 'nth',     0
+    _pn_get    db 'get',     0
+    _pn_conj   db 'conj',    0
+    _pn_vector db 'vector',  0
+    _pn_vec    db 'vec',     0
 
 section '.code' code readable executable
 
@@ -513,6 +519,243 @@ prim_exit:
     xor  rcx, rcx           ; exit code 0
     call hal_exit            ; never returns
 
+; ── Vector primitives ────────────────────────────────────────────────────────
+
+; (count coll) — number of elements in a vector, cons list, or nil
+; Stack: 3 pushes + sub 32 = 56; (8-56) mod 16 = 0 ✓
+prim_count:
+    push rbx
+    push r12
+    push r13
+    sub  rsp, 32
+
+    call _arg1          ; rax = first arg
+
+    mov  r9, [rax + Cell.tag]
+
+    cmp  r9, TAG_VEC
+    je   .vec_count
+
+    cmp  r9, TAG_CONS
+    je   .cons_count
+
+    ; nil or anything else → 0
+    xor  rcx, rcx
+    call make_int
+    jmp  .done
+
+.vec_count:
+    mov  rbx, [rax + Cell.val]     ; Vec*
+    mov  rcx, [rbx + Vec.count]
+    call make_int
+    jmp  .done
+
+.cons_count:
+    mov  r12, rax
+    xor  r13, r13                  ; count
+.cons_loop:
+    cmp  qword [r12 + Cell.tag], TAG_NIL
+    je   .cons_done
+    mov  rbx, [r12 + Cell.val]
+    mov  r12, [rbx + Cons.cdr]
+    inc  r13
+    jmp  .cons_loop
+.cons_done:
+    mov  rcx, r13
+    call make_int
+
+.done:
+    add  rsp, 32
+    pop  r13
+    pop  r12
+    pop  rbx
+    ret
+
+; (nth coll idx) — element at index; nil if out of bounds
+; Stack: 3 pushes + sub 32 = 56; (8-56) mod 16 = 0 ✓
+prim_nth:
+    push rbx
+    push r12
+    push r13
+    sub  rsp, 32
+
+    ; Extract coll (first arg) and idx (second arg)
+    mov  rax, [rcx + Cell.tag]
+    cmp  rax, TAG_NIL
+    je   .nil_ret
+
+    mov  rbx, [rcx + Cell.val]
+    mov  r12, [rbx + Cons.car]     ; r12 = coll Cell*
+    mov  r9,  [rbx + Cons.cdr]
+
+    mov  rax, [r9 + Cell.tag]
+    cmp  rax, TAG_NIL
+    je   .nil_ret
+
+    mov  rbx, [r9 + Cell.val]
+    mov  r13, [rbx + Cons.car]     ; r13 = idx Cell*
+
+    cmp  qword [r13 + Cell.tag], TAG_INT
+    jne  .nil_ret
+    mov  r13, [r13 + Cell.val]     ; r13 = index integer
+
+    cmp  r13, 0
+    jl   .nil_ret
+
+    ; Dispatch on collection type
+    cmp  qword [r12 + Cell.tag], TAG_VEC
+    je   .vec_nth
+    cmp  qword [r12 + Cell.tag], TAG_CONS
+    je   .cons_nth
+
+.nil_ret:
+    lea  rax, [_cell_nil]
+    jmp  .done
+
+.vec_nth:
+    mov  rbx, [r12 + Cell.val]     ; Vec*
+    cmp  r13, [rbx + Vec.count]
+    jge  .nil_ret
+    mov  rax, [rbx + VEC_HDR + r13*8]
+    jmp  .done
+
+.cons_nth:
+    mov  r9, r13                   ; steps remaining
+.cons_walk:
+    cmp  r9, 0
+    je   .cons_pick
+    cmp  qword [r12 + Cell.tag], TAG_NIL
+    je   .nil_ret
+    mov  rbx, [r12 + Cell.val]
+    mov  r12, [rbx + Cons.cdr]
+    dec  r9
+    jmp  .cons_walk
+.cons_pick:
+    cmp  qword [r12 + Cell.tag], TAG_NIL
+    je   .nil_ret
+    mov  rbx, [r12 + Cell.val]
+    mov  rax, [rbx + Cons.car]
+
+.done:
+    add  rsp, 32
+    pop  r13
+    pop  r12
+    pop  rbx
+    ret
+
+; (get coll idx) — same as nth for vectors (returns nil if not found)
+prim_get:
+    jmp  prim_nth
+
+; (conj vec elem) — new vector with elem appended
+; Also accepts nil as vec (returns single-element vector).
+; Stack: 3 pushes + sub 64 = 88; (8-88) mod 16 = 0 ✓
+; [rsp+32] = old Vec*
+; [rsp+40] = new Vec*
+; [rsp+48] = old count
+prim_conj:
+    push rbx
+    push r12
+    push r13
+    sub  rsp, 64
+
+    mov  rax, [rcx + Cell.tag]
+    cmp  rax, TAG_NIL
+    je   .nil_ret
+
+    mov  rbx, [rcx + Cell.val]
+    mov  r12, [rbx + Cons.car]     ; r12 = vec Cell*
+    mov  r9,  [rbx + Cons.cdr]
+    mov  rax, [r9 + Cell.tag]
+    cmp  rax, TAG_NIL
+    je   .nil_ret
+
+    mov  rbx, [r9 + Cell.val]
+    mov  r13, [rbx + Cons.car]     ; r13 = elem Cell*
+
+    ; Handle nil vec → create [elem]
+    cmp  qword [r12 + Cell.tag], TAG_NIL
+    je   .nil_vec
+
+    cmp  qword [r12 + Cell.tag], TAG_VEC
+    jne  .nil_ret
+
+    ; Regular conj onto an existing vector
+    mov  rbx, [r12 + Cell.val]     ; old Vec*
+    mov  [rsp+32], rbx
+    mov  r9,  [rbx + Vec.count]
+    mov  [rsp+48], r9
+
+    ; Allocate new Vec with count+1
+    lea  rcx, [r9 + 1]
+    shl  rcx, 3
+    add  rcx, VEC_HDR
+    call hal_alloc
+    mov  [rsp+40], rax
+
+    mov  rbx, rax
+    mov  r9, [rsp+48]
+    lea  r10, [r9 + 1]
+    mov  [rbx + Vec.count], r10
+
+    ; Copy old elements (no calls in this loop — r9/r10 safe)
+    xor  r10, r10
+.copy_loop:
+    cmp  r10, r9
+    jge  .copy_done
+    mov  rbx, [rsp+32]
+    mov  rax, [rbx + VEC_HDR + r10*8]
+    mov  rbx, [rsp+40]
+    mov  [rbx + VEC_HDR + r10*8], rax
+    inc  r10
+    jmp  .copy_loop
+.copy_done:
+    ; Append elem at index = old count
+    mov  rbx, [rsp+40]
+    mov  r9,  [rsp+48]
+    mov  [rbx + VEC_HDR + r9*8], r13
+
+    call _cell_alloc
+    mov  rbx, [rsp+40]
+    mov  qword [rax + Cell.tag], TAG_VEC
+    mov  [rax + Cell.val], rbx
+    jmp  .done
+
+.nil_vec:
+    ; Create single-element vector [elem]
+    mov  rcx, VEC_HDR + 8
+    call hal_alloc
+    mov  [rsp+40], rax
+    mov  qword [rax + Vec.count], 1
+    mov  [rax + VEC_HDR], r13
+
+    call _cell_alloc
+    mov  rbx, [rsp+40]
+    mov  qword [rax + Cell.tag], TAG_VEC
+    mov  [rax + Cell.val], rbx
+    jmp  .done
+
+.nil_ret:
+    lea  rax, [_cell_nil]
+
+.done:
+    add  rsp, 64
+    pop  r13
+    pop  r12
+    pop  rbx
+    ret
+
+; (vector x...) — construct a vector from evaluated arguments
+; args is already an evaluated cons list — just call make_vec.
+; Stack: 1 push + sub 32 = 40; (8-40) mod 16 = 0 ✓
+prim_vector:
+    push rbx
+    sub  rsp, 32
+    call make_vec           ; rcx = args cons list → rax = TAG_VEC Cell*
+    add  rsp, 32
+    pop  rbx
+    ret
+
 ; ── Registration ────────────────────────────────────────────────────────────
 
 ; defprim name_str, name_len, fn_label
@@ -563,8 +806,14 @@ primitives_init:
     defprim _pn_not,  3, prim_not
     defprim _pn_disp, 7, prim_display
     defprim _pn_nl,   7, prim_newline
-    defprim _pn_exit, 4, prim_exit
-    defprim _pn_quit, 4, prim_exit   ; quit = same as exit
+    defprim _pn_exit,   4, prim_exit
+    defprim _pn_quit,   4, prim_exit    ; quit = same as exit
+    defprim _pn_count,  5, prim_count
+    defprim _pn_nth,    3, prim_nth
+    defprim _pn_get,    3, prim_get
+    defprim _pn_conj,   4, prim_conj
+    defprim _pn_vector, 6, prim_vector
+    defprim _pn_vec,    3, prim_vector  ; (vec coll) alias
 
     add  rsp, 32
     pop  r13

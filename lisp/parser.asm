@@ -21,6 +21,62 @@ section '.data' data readable writeable
 
 section '.code' code readable executable
 
+; _parse_vector — read [ elem ... ] and return a TAG_VEC Cell*
+; Elements are parsed recursively via _parse_bracket_list then converted.
+; Stack: 1 push + sub 32 = 40; (8-40) mod 16 = 0 ✓
+_parse_vector:
+    push rbx
+    sub  rsp, 32
+
+    call _parse_bracket_list    ; rax = cons list of parsed elements
+    mov  rcx, rax
+    call make_vec               ; rax = TAG_VEC Cell*
+
+    add  rsp, 32
+    pop  rbx
+    ret
+
+; _parse_bracket_list — read a vector body after '[' has been consumed
+; Returns a plain CONS list (same structure as a paren list).
+; Used for let bindings and fn/defn parameter vectors.
+; Out: rax = Cell* (CONS chain terminating with _cell_nil)
+; Stack: 3 pushes + sub 32 → 56, (8-56) mod 16 = 0 ✓
+_parse_bracket_list:
+    push rbx
+    push r12
+    push r13
+    sub  rsp, 32
+
+    lea  rcx, [_parse_tok]
+    call tok_next           ; rax = TOK_*
+
+    cmp  rax, TOK_RBRACKET
+    je   .end_list
+    cmp  rax, TOK_EOF
+    je   .end_list          ; unclosed bracket — treat EOF as ']'
+
+    lea  rcx, [_parse_tok]
+    call _parse_token
+    mov  r12, rax           ; r12 = car Cell*
+
+    call _parse_bracket_list
+    mov  r13, rax           ; r13 = cdr Cell*
+
+    mov  rcx, r12
+    mov  rdx, r13
+    call make_cons
+    jmp  .done
+
+.end_list:
+    lea  rax, [_cell_nil]
+
+.done:
+    add  rsp, 32
+    pop  r13
+    pop  r12
+    pop  rbx
+    ret
+
 ; _parse_list — read a list body after '(' has been consumed
 ; Out: rax = Cell* (CONS chain terminating with _cell_nil)
 ; Stack: 3 pushes + sub 32 → 56, (8-56) mod 16 = 0 ✓
@@ -80,21 +136,43 @@ _parse_token:
     cmp  rbx, TOK_ATOM
     je   .atom
 
+    cmp  rbx, TOK_STRING
+    je   .str
+
     cmp  rbx, TOK_LPAREN
     je   .list
 
-    ; TOK_RPAREN, TOK_EOF, or anything else → nil
+    cmp  rbx, TOK_LBRACKET
+    je   .bracket
+
+    ; TOK_RPAREN, TOK_RBRACKET, TOK_EOF, or anything else → nil
     lea  rax, [_cell_nil]
     jmp  .done
 
 .atom:
     mov  rcx, [r12 + TOK.start]
     mov  rdx, [r12 + TOK.len]
-    call make_atom          ; rax = Cell*
+    cmp  byte [rcx], ':'
+    je   .keyword
+    call make_atom
+    jmp  .done
+
+.str:
+    mov  rcx, [r12 + TOK.start]
+    mov  rdx, [r12 + TOK.len]
+    call make_string        ; rax = Cell* (TAG_STRING)
+    jmp  .done
+
+.keyword:
+    call make_keyword       ; rax = Cell* (TAG_KEYWORD)
     jmp  .done
 
 .list:
     call _parse_list        ; rax = Cell*  (reads until matching ')')
+    jmp  .done
+
+.bracket:
+    call _parse_vector          ; rax = TAG_VEC Cell*
 
 .done:
     add  rsp, 32

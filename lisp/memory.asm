@@ -128,6 +128,157 @@ make_sym:
     pop  rbx
     ret
 
+; make_string — allocate a TAG_STRING Cell (self-evaluating)
+; In:  rcx = pointer to string bytes (inner content, no quotes)
+;      rdx = byte count
+; Out: rax = Cell*
+; Stack: 3 pushes + sub 32 → 56, (8-56) mod 16 = 0 ✓
+make_string:
+    push rbx
+    push r12
+    push r13
+    sub  rsp, 32
+
+    mov  r12, rcx
+    mov  r13, rdx
+
+    lea  rcx, [r13 + SYMDATA_HDR + 1]
+    call hal_alloc
+    mov  rbx, rax
+
+    mov  [rbx + SymData.len], r13
+
+    xor  r9, r9
+.copy:
+    cmp  r9,  r13
+    jge  .copy_done
+    mov  al,  [r12 + r9]
+    mov  [rbx + SymData.chars + r9], al
+    inc  r9
+    jmp  .copy
+.copy_done:
+    mov  byte [rbx + SymData.chars + r13], 0
+
+    call _cell_alloc
+    mov  qword [rax + Cell.tag], TAG_STRING
+    mov  [rax + Cell.val], rbx
+
+    add  rsp, 32
+    pop  r13
+    pop  r12
+    pop  rbx
+    ret
+
+; make_vec — convert a cons list of Cell* values into a TAG_VEC Cell
+; In:  rcx = cons list Cell* (the elements, already in order)
+; Out: rax = TAG_VEC Cell*
+;
+; Two-pass: count elements, allocate Vec, fill cells.
+; Stack: 3 pushes + sub 64 = 88; (8-88) mod 16 = 0 ✓
+; [rsp+32] = original cons list (saved for pass 2)
+; [rsp+40] = Vec*
+; [rsp+48] = count
+make_vec:
+    push rbx
+    push r12
+    push r13
+    sub  rsp, 64
+
+    mov  r12, rcx               ; r12 = cons list walker
+    mov  [rsp+32], rcx          ; save original for pass 2
+
+    ; ── Pass 1: count elements ────────────────────────────────────────────
+    xor  r13, r13               ; r13 = count
+.count_loop:
+    cmp  qword [r12 + Cell.tag], TAG_NIL
+    je   .count_done
+    mov  rbx, [r12 + Cell.val]
+    mov  r12, [rbx + Cons.cdr]
+    inc  r13
+    jmp  .count_loop
+.count_done:
+    mov  [rsp+48], r13
+
+    ; ── Allocate Vec: VEC_HDR + count * 8 bytes ───────────────────────────
+    mov  rcx, r13
+    shl  rcx, 3
+    add  rcx, VEC_HDR
+    call hal_alloc              ; rax = Vec*
+    mov  [rsp+40], rax
+
+    mov  rbx, rax
+    mov  r13, [rsp+48]
+    mov  [rbx + Vec.count], r13
+
+    ; ── Pass 2: fill cell pointers ────────────────────────────────────────
+    mov  r12, [rsp+32]          ; restore original list
+    xor  r13, r13               ; r13 = index
+.fill_loop:
+    cmp  qword [r12 + Cell.tag], TAG_NIL
+    je   .fill_done
+    mov  rbx, [r12 + Cell.val]  ; Cons*
+    mov  r9,  [rbx + Cons.car]  ; element Cell*
+    mov  r12, [rbx + Cons.cdr]  ; advance list
+    mov  rbx, [rsp+40]          ; Vec*
+    mov  [rbx + VEC_HDR + r13*8], r9
+    inc  r13
+    jmp  .fill_loop
+.fill_done:
+
+    ; ── Wrap in TAG_VEC Cell ──────────────────────────────────────────────
+    call _cell_alloc
+    mov  rbx, [rsp+40]
+    mov  qword [rax + Cell.tag], TAG_VEC
+    mov  [rax + Cell.val], rbx
+
+    add  rsp, 64
+    pop  r13
+    pop  r12
+    pop  rbx
+    ret
+
+; make_keyword — allocate a TAG_KEYWORD Cell (self-evaluating, used as map keys)
+; In:  rcx = pointer to source bytes (including leading ':')
+;      rdx = byte count (including ':')
+; Out: rax = Cell*
+; Identical to make_sym but sets TAG_KEYWORD.
+; Stack: 3 pushes + sub 32 → 56, (8-56) mod 16 = 0 ✓
+make_keyword:
+    push rbx
+    push r12
+    push r13
+    sub  rsp, 32
+
+    mov  r12, rcx
+    mov  r13, rdx
+
+    lea  rcx, [r13 + SYMDATA_HDR + 1]
+    call hal_alloc
+    mov  rbx, rax
+
+    mov  [rbx + SymData.len], r13
+
+    xor  r9, r9
+.copy:
+    cmp  r9,  r13
+    jge  .copy_done
+    mov  al,  [r12 + r9]
+    mov  [rbx + SymData.chars + r9], al
+    inc  r9
+    jmp  .copy
+.copy_done:
+    mov  byte [rbx + SymData.chars + r13], 0
+
+    call _cell_alloc
+    mov  qword [rax + Cell.tag], TAG_KEYWORD
+    mov  [rax + Cell.val], rbx
+
+    add  rsp, 32
+    pop  r13
+    pop  r12
+    pop  rbx
+    ret
+
 ; make_cons — allocate a TAG_CONS Cell wrapping a new Cons pair
 ; In:  rcx = car (Cell*)
 ;      rdx = cdr (Cell*)

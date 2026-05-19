@@ -128,6 +128,48 @@ _print_list:
     pop  rbx
     ret
 
+; _print_vec — print a Vec as [e1 e2 e3]
+; In:  rcx = Vec*
+; Uses r12=Vec*, r13=count, rbx=index — all callee-saved, survive print_cell.
+; Stack: 3 pushes + sub 32 = 56; (8-56) mod 16 = 0 ✓
+_print_vec:
+    push rbx
+    push r12
+    push r13
+    sub  rsp, 32
+
+    mov  r12, rcx
+    mov  r13, [r12 + Vec.count]
+    xor  rbx, rbx               ; index = 0
+
+    mov  cl, '['
+    call hal_write_char
+
+.vec_loop:
+    cmp  rbx, r13
+    jge  .vec_end
+
+    test rbx, rbx               ; space before every element except first
+    jz   .no_sep
+    mov  cl, ' '
+    call hal_write_char
+.no_sep:
+    mov  rcx, [r12 + VEC_HDR + rbx*8]
+    call print_cell             ; r12, r13, rbx all preserved ✓
+
+    inc  rbx
+    jmp  .vec_loop
+
+.vec_end:
+    mov  cl, ']'
+    call hal_write_char
+
+    add  rsp, 32
+    pop  r13
+    pop  r12
+    pop  rbx
+    ret
+
 ; print_cell — print one Cell in Lisp notation
 ; In:  rcx = Cell*
 ; Stack: 3 pushes + sub 32 → 56, (8-56) mod 16 = 0 ✓
@@ -160,6 +202,15 @@ print_cell:
 
     cmp  rax, TAG_CLOSURE
     je   .closure
+
+    cmp  rax, TAG_KEYWORD
+    je   .keyword
+
+    cmp  rax, TAG_STRING
+    je   .str
+
+    cmp  rax, TAG_VEC
+    je   .vec
 
     ; Unknown tag — shouldn't happen; print nothing
     jmp  .cell_done
@@ -215,6 +266,25 @@ print_cell:
     lea  rcx, [_str_lambda]
     mov  rdx, 9
     call hal_write_string
+    jmp  .cell_done
+
+.keyword:
+    mov  r13, [r12 + Cell.val]
+    lea  rcx, [r13 + SymData.chars]
+    mov  rdx, [r13 + SymData.len]
+    call hal_write_string
+    jmp  .cell_done
+
+.str:
+    mov  r13, [r12 + Cell.val]
+    lea  rcx, [r13 + SymData.chars]
+    mov  rdx, [r13 + SymData.len]
+    call hal_write_string
+    jmp  .cell_done
+
+.vec:
+    mov  rcx, [r12 + Cell.val]     ; Vec*
+    call _print_vec
 
 .cell_done:
     add  rsp, 32

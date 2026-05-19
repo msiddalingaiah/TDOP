@@ -4,11 +4,13 @@
 
 ; ── Token types ──────────────────────────────────────────────────────────────
 
-TOK_EOF    = 0      ; end of input
-TOK_LPAREN = 1      ; (
-TOK_RPAREN = 2      ; )
-TOK_ATOM   = 3      ; symbol or number: foo, bar, 42, +, nil, true ...
-TOK_STRING = 4      ; "..." (reserved for later)
+TOK_EOF      = 0    ; end of input
+TOK_LPAREN   = 1    ; (
+TOK_RPAREN   = 2    ; )
+TOK_ATOM     = 3    ; symbol or number: foo, bar, 42, +, nil, true ...
+TOK_STRING   = 4    ; "..." (reserved for later)
+TOK_LBRACKET = 5    ; [
+TOK_RBRACKET = 6    ; ]
 
 ; ── Token struct field offsets ────────────────────────────────────────────────
 ;
@@ -32,6 +34,22 @@ TAG_SYM     = 3
 TAG_CONS    = 4
 TAG_PRIM    = 5     ; built-in function   — Cell.val = function pointer
 TAG_CLOSURE = 6     ; lambda + captured env — Cell.val = Closure*
+TAG_KEYWORD = 7     ; :foo — self-evaluating, used as map keys
+TAG_STRING  = 8     ; "hello" — self-evaluating string value
+TAG_VEC     = 9     ; [1 2 3] — flat Cell* array; Cell.val = Vec*
+
+; ── Vec (flat array of Cell pointers) ────────────────────────────────────────
+;
+;   struct Vec {
+;       count : qword       ; number of elements
+;       cells : Cell*[N]    ; inline array, N = count
+;   }
+;
+;   Element i:  [Vec* + VEC_HDR + i*8]
+;   Allocate:   hal_alloc(VEC_HDR + count * 8)
+
+Vec.count = 0
+VEC_HDR   = 8       ; byte offset of element array within Vec
 
 ; ── Cell (uniform tagged value, 16 bytes) ─────────────────────────────────────
 ;

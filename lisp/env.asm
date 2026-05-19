@@ -212,62 +212,107 @@ env_define:
     ret
 
 ; env_extend — bind params to args in a new alist frame on top of parent
-; In:  rcx = params Cell* (list of sym Cells)
-;      rdx = args   Cell* (list of val Cells, already evaluated)
+; In:  rcx = params Cell* (TAG_VEC from fn/defn, or cons list from lambda)
+;      rdx = args   Cell* (evaluated cons list)
 ;      r8  = parent env Cell*
 ; Out: rax = new env Cell* (alist with local bindings prepended)
 ;
-; Builds: ((p1.a1) (p2.a2) ... . parent)
-; Stops when either list is exhausted.
+; Handles both TAG_VEC params (fn/defn use [...]) and cons-list params
+; (lambda uses (...)).  Stops when params or args are exhausted.
 ;
-; Stack: 3 pushes + sub 48 = 72; (8-72) mod 16 = 0 ✓
-; Local: [rsp+32] = running env Cell* (grows as we prepend)
+; Stack: 3 pushes + sub 64 = 88; (8-88) mod 16 = 0 ✓
+; Locals:
+;   [rsp+32] = running env
+;   [rsp+40] = pair Cell* temp  /  Vec* (vec path)
+;   [rsp+48] = element count      (vec path only)
+;   [rsp+56] = index i            (vec path only)
 env_extend:
     push rbx
     push r12
     push r13
-    sub  rsp, 48
+    sub  rsp, 64
 
-    mov  r12, rcx           ; r12 = params (walks forward)
-    mov  r13, rdx           ; r13 = args   (walks forward)
-    mov  [rsp+32], r8       ; running env = parent
+    mov  r12, rcx               ; r12 = params
+    mov  r13, rdx               ; r13 = args (cons list, always)
+    mov  [rsp+32], r8           ; running env = parent
 
-.loop:
-    mov  rax, [r12 + Cell.tag]
-    cmp  rax, TAG_NIL
+    ; Dispatch on params type
+    cmp  qword [r12 + Cell.tag], TAG_VEC
+    je   .vec_params
+
+    ; ── Cons-list params (lambda) ─────────────────────────────────────────
+.cons_loop:
+    cmp  qword [r12 + Cell.tag], TAG_NIL
+    je   .done
+    cmp  qword [r13 + Cell.tag], TAG_NIL
     je   .done
 
-    mov  rax, [r13 + Cell.tag]
-    cmp  rax, TAG_NIL
-    je   .done
+    mov  rbx, [r12 + Cell.val]
+    mov  r9,  [rbx + Cons.car]  ; param sym Cell*
+    mov  r12, [rbx + Cons.cdr]
 
-    ; Advance params and args, capturing current heads
-    mov  rbx, [r12 + Cell.val]     ; params Cons*
-    mov  r9,  [rbx + Cons.car]     ; param sym Cell*
-    mov  r12, [rbx + Cons.cdr]     ; params = params.cdr
+    mov  rbx, [r13 + Cell.val]
+    mov  r10, [rbx + Cons.car]  ; arg val Cell*
+    mov  r13, [rbx + Cons.cdr]
 
-    mov  rbx, [r13 + Cell.val]     ; args Cons*
-    mov  r10, [rbx + Cons.car]     ; arg val Cell*
-    mov  r13, [rbx + Cons.cdr]     ; args = args.cdr
-
-    ; pair = make_cons(param, val)
     mov  rcx, r9
     mov  rdx, r10
-    call make_cons          ; rax = pair
-    mov  rbx, rax
+    call make_cons              ; pair = (sym . val)
+    mov  [rsp+40], rax
 
-    ; env = make_cons(pair, env)
-    mov  rcx, rbx
+    mov  rcx, [rsp+40]
     mov  rdx, [rsp+32]
-    call make_cons          ; rax = new env head
+    call make_cons              ; new env head
     mov  [rsp+32], rax
 
-    jmp  .loop
+    jmp  .cons_loop
+
+    ; ── Vector params (fn/defn) ───────────────────────────────────────────
+.vec_params:
+    mov  rbx, [r12 + Cell.val]  ; Vec*
+    mov  [rsp+40], rbx          ; save Vec*
+    mov  r9,  [rbx + Vec.count]
+    mov  [rsp+48], r9           ; save count
+    xor  r9,  r9
+    mov  [rsp+56], r9           ; i = 0
+
+.vec_loop:
+    mov  r9,  [rsp+56]
+    cmp  r9,  [rsp+48]
+    jge  .done
+    cmp  qword [r13 + Cell.tag], TAG_NIL
+    je   .done
+
+    ; sym = Vec.cells[i]
+    mov  rbx, [rsp+40]
+    mov  r10, [rbx + VEC_HDR + r9*8]   ; sym Cell*
+
+    ; val = car(args);  args = cdr(args)
+    mov  rbx, [r13 + Cell.val]
+    mov  r11, [rbx + Cons.car]          ; val Cell*
+    mov  r13, [rbx + Cons.cdr]          ; advance args (r13 callee-saved ✓)
+
+    ; pair = (sym . val)
+    mov  rcx, r10
+    mov  rdx, r11
+    call make_cons
+    mov  r12, rax               ; r12 no longer needed for params — reuse as temp
+
+    ; env = (pair . env)
+    mov  rcx, r12
+    mov  rdx, [rsp+32]
+    call make_cons
+    mov  [rsp+32], rax
+
+    mov  r9, [rsp+56]
+    inc  r9
+    mov  [rsp+56], r9
+    jmp  .vec_loop
 
 .done:
     mov  rax, [rsp+32]
 
-    add  rsp, 48
+    add  rsp, 64
     pop  r13
     pop  r12
     pop  rbx

@@ -108,6 +108,12 @@ tok_next:
     je   .lparen
     cmp  al, ')'
     je   .rparen
+    cmp  al, '['
+    je   .lbracket
+    cmp  al, ']'
+    je   .rbracket
+    cmp  al, '"'
+    je   .string
 
     ; ── Atom: accumulate until a delimiter is seen ────────────────────────
     lea  r13, [_tok_atom_buf]
@@ -129,6 +135,10 @@ tok_next:
     cmp  al, '('
     je   .atom_end_pb
     cmp  al, ')'
+    je   .atom_end_pb
+    cmp  al, '['
+    je   .atom_end_pb
+    cmp  al, ']'
     je   .atom_end_pb
     cmp  al, ' '
     je   .atom_end_pb
@@ -163,6 +173,43 @@ tok_next:
 .rparen:
     mov  qword [r12 + TOK.type], TOK_RPAREN
     mov  rax, TOK_RPAREN
+    jmp  .done
+
+.string:
+    ; Accumulate characters until closing '"' (no escape handling for now)
+    lea  r13, [_tok_atom_buf]
+    xor  rbx, rbx                   ; byte count
+
+.str_loop:
+    call _tok_getc
+    cmp  al, 0                      ; EOF
+    je   .str_end
+    cmp  al, 0x1A                   ; Ctrl-Z
+    je   .str_end
+    cmp  al, '"'                    ; closing quote
+    je   .str_end
+    cmp  rbx, ATOM_BUF_SIZE - 1
+    jge  .str_next
+    mov  [r13 + rbx], al
+    inc  rbx
+.str_next:
+    jmp  .str_loop
+
+.str_end:
+    mov  qword [r12 + TOK.type],  TOK_STRING
+    mov  qword [r12 + TOK.start], r13
+    mov  qword [r12 + TOK.len],   rbx
+    mov  rax, TOK_STRING
+    jmp  .done
+
+.lbracket:
+    mov  qword [r12 + TOK.type], TOK_LBRACKET
+    mov  rax, TOK_LBRACKET
+    jmp  .done
+
+.rbracket:
+    mov  qword [r12 + TOK.type], TOK_RBRACKET
+    mov  rax, TOK_RBRACKET
     jmp  .done
 
 .eof:
